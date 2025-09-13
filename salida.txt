@@ -1,0 +1,1187 @@
+accel.rs:
+// accel.rs
+use raylib::prelude::Vector3;
+
+use crate::ray_intersect::{Intersect, RayIntersect};
+
+#[derive(Clone, Copy)]
+struct Aabb { min: Vector3, max: Vector3 }
+
+impl Aabb {
+    fn union(a: Aabb, b: Aabb) -> Aabb {
+        Aabb {
+            min: Vector3::new(a.min.x.min(b.min.x), a.min.y.min(b.min.y), a.min.z.min(b.min.z)),
+            max: Vector3::new(a.max.x.max(b.max.x), a.max.y.max(b.max.y), a.max.z.max(b.max.z)),
+        }
+    }
+
+    fn intersect_ray(&self, ro: Vector3, rd: Vector3) -> Option<(f32, f32)> {
+        // Ray-AABB parametric intersection
+        let inv = Vector3::new(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
+
+        let mut t1 = (self.min.x - ro.x) * inv.x;
+        let mut t2 = (self.max.x - ro.x) * inv.x;
+        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
+
+        let mut ty1 = (self.min.y - ro.y) * inv.y;
+        let mut ty2 = (self.max.y - ro.y) * inv.y;
+        if ty1 > ty2 { std::mem::swap(&mut ty1, &mut ty2); }
+
+        if t1 > ty2 || ty1 > t2 { return None; }
+        if ty1 > t1 { t1 = ty1; }
+        if ty2 < t2 { t2 = ty2; }
+
+        let mut tz1 = (self.min.z - ro.z) * inv.z;
+        let mut tz2 = (self.max.z - ro.z) * inv.z;
+        if tz1 > tz2 { std::mem::swap(&mut tz1, &mut tz2); }
+
+        if t1 > tz2 || tz1 > t2 { return None; }
+        if tz1 > t1 { t1 = tz1; }
+        if tz2 < t2 { t2 = tz2; }
+
+        Some((t1, t2))
+    }
+}
+
+pub struct UniformGridAccel {
+    bounds: Aabb,
+    dims: [i32; 3],
+    cell_size: Vector3,
+    cells: Vec<Vec<usize>>, // por celda, índices a objects[]
+}
+
+impl UniformGridAccel {
+    /// Construye la grilla a partir de los AABB de los objetos y un tamaño de celda objetivo.
+    pub fn build(objects: &[Box<dyn RayIntersect>], desired_cell_size: f32) -> Self {
+        // 1) Bounds globales
+        let mut bounds = Aabb {
+            min: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+            max: Vector3::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY),
+        };
+        let mut aabbs: Vec<Aabb> = Vec::with_capacity(objects.len());
+        for obj in objects.iter() {
+            let (mn, mx) = obj.aabb();
+            let a = Aabb { min: mn, max: mx };
+            aabbs.push(a);
+            bounds = Aabb::union(bounds, a);
+        }
+        // pequeño padding
+        let pad = 1e-4;
+        bounds.min = bounds.min - Vector3::new(pad, pad, pad);
+        bounds.max = bounds.max + Vector3::new(pad, pad, pad);
+
+        // 2) Dims ~ extents / desired_cell_size (>=1)
+        let ext = bounds.max - bounds.min;
+        let mut nx = (ext.x / desired_cell_size).ceil() as i32;
+        let mut ny = (ext.y / desired_cell_size).ceil() as i32;
+        let mut nz = (ext.z / desired_cell_size).ceil() as i32;
+        nx = nx.max(1); ny = ny.max(1); nz = nz.max(1);
+
+        // evitar millones de celdas
+        let max_cells: i32 = 800_000;
+        let mut scale = 1.0f32;
+        while (nx as i64 * ny as i64 * nz as i64) > max_cells as i64 {
+            scale *= 1.25;
+            nx = ((ext.x / (desired_cell_size * scale)).ceil() as i32).max(1);
+            ny = ((ext.y / (desired_cell_size * scale)).ceil() as i32).max(1);
+            nz = ((ext.z / (desired_cell_size * scale)).ceil() as i32).max(1);
+        }
+
+        let dims = [nx, ny, nz];
+        let cell_size = Vector3::new(ext.x / nx as f32, ext.y / ny as f32, ext.z / nz as f32);
+        let total = (nx as usize) * (ny as usize) * (nz as usize);
+        let mut cells: Vec<Vec<usize>> = (0..total).map(|_| Vec::new()).collect();
+
+        // 3) Insertar cada objeto en las celdas que toca
+        for (i, a) in aabbs.iter().enumerate() {
+            let min_ix = ((a.min.x - bounds.min.x) / cell_size.x).floor() as i32;
+            let min_iy = ((a.min.y - bounds.min.y) / cell_size.y).floor() as i32;
+            let min_iz = ((a.min.z - bounds.min.z) / cell_size.z).floor() as i32;
+            let max_ix = ((a.max.x - bounds.min.x) / cell_size.x).floor() as i32;
+            let max_iy = ((a.max.y - bounds.min.y) / cell_size.y).floor() as i32;
+            let max_iz = ((a.max.z - bounds.min.z) / cell_size.z).floor() as i32;
+
+            for iz in min_iz.max(0)..=max_iz.min(nz - 1) {
+                for iy in min_iy.max(0)..=max_iy.min(ny - 1) {
+                    for ix in min_ix.max(0)..=max_ix.min(nx - 1) {
+                        let idx = ((iz * ny + iy) * nx + ix) as usize;
+                        cells[idx].push(i);
+                    }
+                }
+            }
+        }
+
+        UniformGridAccel { bounds, dims, cell_size, cells }
+    }
+
+    #[inline] fn cell_index(&self, ix: i32, iy: i32, iz: i32) -> usize {
+        ((iz * self.dims[1] + iy) * self.dims[0] + ix) as usize
+    }
+
+    /// Intersección más cercana usando DDA por celdas.
+    pub fn trace(&self, ro: &Vector3, rd: &Vector3, objects: &[Box<dyn RayIntersect>]) -> Intersect {
+        // Intersección con el AABB global
+        let (t0, t1) = match self.bounds.intersect_ray(*ro, *rd) {
+            Some(t) => t,
+            None => return Intersect::empty(),
+        };
+        let start_t = if t0 > 0.0 { t0 } else { 0.0 };
+        let start = *ro + *rd * start_t;
+
+        // Coordenadas de celda inicial
+        let mut ix = ((start.x - self.bounds.min.x) / self.cell_size.x).floor() as i32;
+        let mut iy = ((start.y - self.bounds.min.y) / self.cell_size.y).floor() as i32;
+        let mut iz = ((start.z - self.bounds.min.z) / self.cell_size.z).floor() as i32;
+        ix = ix.clamp(0, self.dims[0]-1);
+        iy = iy.clamp(0, self.dims[1]-1);
+        iz = iz.clamp(0, self.dims[2]-1);
+
+        // Setup DDA
+        let step_x = if rd.x >= 0.0 { 1 } else { -1 };
+        let step_y = if rd.y >= 0.0 { 1 } else { -1 };
+        let step_z = if rd.z >= 0.0 { 1 } else { -1 };
+
+        let next_boundary_x = self.bounds.min.x + (ix + (step_x > 0) as i32) as f32 * self.cell_size.x;
+        let next_boundary_y = self.bounds.min.y + (iy + (step_y > 0) as i32) as f32 * self.cell_size.y;
+        let next_boundary_z = self.bounds.min.z + (iz + (step_z > 0) as i32) as f32 * self.cell_size.z;
+
+        let t_max_x = if rd.x != 0.0 { (next_boundary_x - start.x) / rd.x } else { f32::INFINITY };
+        let t_max_y = if rd.y != 0.0 { (next_boundary_y - start.y) / rd.y } else { f32::INFINITY };
+        let t_max_z = if rd.z != 0.0 { (next_boundary_z - start.z) / rd.z } else { f32::INFINITY };
+
+        let t_delta_x = if rd.x != 0.0 { self.cell_size.x.abs() / rd.x.abs() } else { f32::INFINITY };
+        let t_delta_y = if rd.y != 0.0 { self.cell_size.y.abs() / rd.y.abs() } else { f32::INFINITY };
+        let t_delta_z = if rd.z != 0.0 { self.cell_size.z.abs() / rd.z.abs() } else { f32::INFINITY };
+
+        let mut tmx = t_max_x.max(0.0);
+        let mut tmy = t_max_y.max(0.0);
+        let mut tmz = t_max_z.max(0.0);
+
+        let mut best = Intersect::empty();
+        let mut best_t = f32::INFINITY;
+        let mut t = start_t;
+
+        while ix >= 0 && iy >= 0 && iz >= 0 &&
+              ix < self.dims[0] && iy < self.dims[1] && iz < self.dims[2] && t <= t1 {
+
+            let cell_idx = self.cell_index(ix, iy, iz);
+            // probar solo objetos de esta celda
+            for &obj_idx in &self.cells[cell_idx] {
+                let i = objects[obj_idx].ray_intersect(ro, rd);
+                if i.is_intersecting && i.distance < best_t {
+                    best_t = i.distance;
+                    best = i;
+                }
+            }
+
+            // si ya encontramos algo antes de cruzar a la próxima celda, salimos
+            let next_t = tmx.min(tmy).min(tmz) + t;
+            if best_t < next_t {
+                break;
+            }
+
+            // avanzar a la siguiente celda
+            if tmx < tmy {
+                if tmx < tmz {
+                    ix += step_x; t += tmx; tmx = t_delta_x;
+                } else {
+                    iz += step_z; t += tmz; tmz = t_delta_z;
+                }
+            } else {
+                if tmy < tmz {
+                    iy += step_y; t += tmy; tmy = t_delta_y;
+                } else {
+                    iz += step_z; t += tmz; tmz = t_delta_z;
+                }
+            }
+        }
+
+        best
+    }
+
+    /// Sombra: devuelve true si hay intersección antes de `max_t`.
+    pub fn occluded(&self, ro: &Vector3, rd: &Vector3, max_t: f32, objects: &[Box<dyn RayIntersect>]) -> bool {
+        let (t0, t1) = match self.bounds.intersect_ray(*ro, *rd) {
+            Some(t) => t,
+            None => return false,
+        };
+        let mut t_limit = t1.min(max_t);
+        let start_t = if t0 > 0.0 { t0 } else { 0.0 };
+        let start = *ro + *rd * start_t;
+
+        let mut ix = ((start.x - self.bounds.min.x) / self.cell_size.x).floor() as i32;
+        let mut iy = ((start.y - self.bounds.min.y) / self.cell_size.y).floor() as i32;
+        let mut iz = ((start.z - self.bounds.min.z) / self.cell_size.z).floor() as i32;
+        ix = ix.clamp(0, self.dims[0]-1);
+        iy = iy.clamp(0, self.dims[1]-1);
+        iz = iz.clamp(0, self.dims[2]-1);
+
+        let step_x = if rd.x >= 0.0 { 1 } else { -1 };
+        let step_y = if rd.y >= 0.0 { 1 } else { -1 };
+        let step_z = if rd.z >= 0.0 { 1 } else { -1 };
+
+        let next_boundary_x = self.bounds.min.x + (ix + (step_x > 0) as i32) as f32 * self.cell_size.x;
+        let next_boundary_y = self.bounds.min.y + (iy + (step_y > 0) as i32) as f32 * self.cell_size.y;
+        let next_boundary_z = self.bounds.min.z + (iz + (step_z > 0) as i32) as f32 * self.cell_size.z;
+
+        let t_max_x = if rd.x != 0.0 { (next_boundary_x - start.x) / rd.x } else { f32::INFINITY };
+        let t_max_y = if rd.y != 0.0 { (next_boundary_y - start.y) / rd.y } else { f32::INFINITY };
+        let t_max_z = if rd.z != 0.0 { (next_boundary_z - start.z) / rd.z } else { f32::INFINITY };
+
+        let t_delta_x = if rd.x != 0.0 { self.cell_size.x.abs() / rd.x.abs() } else { f32::INFINITY };
+        let t_delta_y = if rd.y != 0.0 { self.cell_size.y.abs() / rd.y.abs() } else { f32::INFINITY };
+        let t_delta_z = if rd.z != 0.0 { self.cell_size.z.abs() / rd.z.abs() } else { f32::INFINITY };
+
+        let mut tmx = t_max_x.max(0.0);
+        let mut tmy = t_max_y.max(0.0);
+        let mut tmz = t_max_z.max(0.0);
+
+        let mut t = start_t;
+
+        while ix >= 0 && iy >= 0 && iz >= 0 &&
+              ix < self.dims[0] && iy < self.dims[1] && iz < self.dims[2] && t <= t_limit {
+
+            let cell_idx = self.cell_index(ix, iy, iz);
+            for &obj_idx in &self.cells[cell_idx] {
+                let i = objects[obj_idx].ray_intersect(ro, rd);
+                if i.is_intersecting && i.distance < t_limit {
+                    return true;
+                }
+            }
+
+            let next_t = tmx.min(tmy).min(tmz) + t;
+            if next_t > t_limit { break; }
+
+            if tmx < tmy {
+                if tmx < tmz { ix += step_x; t += tmx; tmx = t_delta_x; }
+                else         { iz += step_z; t += tmz; tmz = t_delta_z; }
+            } else {
+                if tmy < tmz { iy += step_y; t += tmy; tmy = t_delta_y; }
+                else         { iz += step_z; t += tmz; tmz = t_delta_z; }
+            }
+        }
+        false
+    }
+}
+
+camera.rs:
+use raylib::prelude::*;
+
+/// A 3D camera that maintains its position and orientation in world space
+pub struct Camera {
+    pub eye: Vector3,     // Camera position in world coordinates
+    pub center: Vector3,  // Point the camera is looking at
+    pub up: Vector3,      // Up direction (initially world up, gets orthonormalized)
+    pub forward: Vector3, // Direction camera is facing (computed from eye->center)
+    pub right: Vector3,   // Right direction (perpendicular to forward and up)
+}
+
+impl Camera {
+    /// Creates a new camera and computes its initial orientation
+    pub fn new(eye: Vector3, center: Vector3, up: Vector3) -> Self {
+        // Initialize camera with given parameters and zero vectors for computed values
+        let mut camera = Camera {
+            eye,
+            center,
+            up,
+            forward: Vector3::zero(), // Will be computed
+            right: Vector3::zero(),   // Will be computed
+        };
+        // Compute the orthonormal basis vectors (forward, right, up)
+        camera.update_basis_vectors();
+        camera
+    }
+
+    /// Recomputes the camera's orthonormal basis vectors from eye, center, and up
+    pub fn update_basis_vectors(&mut self) {
+        // Step 1: Calculate forward direction (from eye toward center)
+        // This gives us the primary viewing direction
+        self.forward = (self.center - self.eye).normalized();
+        
+        // Step 2: Calculate right direction using cross product
+        // forward × up gives us a vector perpendicular to both (pointing right)
+        // This assumes up is roughly correct but may not be perfectly orthogonal
+        self.right = self.forward.cross(self.up).normalized();
+        
+        // Step 3: Recalculate up to ensure perfect orthogonality
+        // right × forward gives us a vector perpendicular to both
+        // This creates a true orthonormal basis (all vectors perpendicular, unit length)
+        self.up = self.right.cross(self.forward);
+        
+        // Note: We now have an orthonormal coordinate system:
+        // - forward: direction camera looks
+        // - right: rightward direction from camera's perspective  
+        // - up: upward direction from camera's perspective
+    }
+
+    /// Rotates the camera around the center point (orbital camera movement)
+    pub fn orbit(&mut self, yaw: f32, pitch: f32) {
+        // Step 1: Get camera position relative to the center point
+        // This treats center as origin for rotation calculations
+        let relative_pos = self.eye - self.center;
+        
+        // Step 2: Convert to spherical coordinates for easier rotation
+        // Calculate current distance from center (radius in spherical coordinates)
+        let radius = relative_pos.length();
+        
+        // Calculate current angles
+        // Current yaw: angle around Y axis (horizontal rotation)
+        let current_yaw = relative_pos.z.atan2(relative_pos.x);
+        // Current pitch: angle from horizontal plane (vertical rotation)
+        let current_pitch = (relative_pos.y / radius).asin();
+        
+        // Step 3: Apply rotation deltas
+        let new_yaw = current_yaw + yaw;
+        let new_pitch = (current_pitch + pitch).clamp(-1.5, 1.5); // Clamp to avoid gimbal lock
+        
+        // Step 4: Convert back to Cartesian coordinates using trigonometry
+        // Spherical to Cartesian: x = r*cos(pitch)*cos(yaw), y = r*sin(pitch), z = r*cos(pitch)*sin(yaw)
+        let cos_pitch = new_pitch.cos();
+        let new_relative_pos = Vector3::new(
+            radius * cos_pitch * new_yaw.cos(),  // X component
+            radius * new_pitch.sin(),            // Y component  
+            radius * cos_pitch * new_yaw.sin(),  // Z component
+        );
+        
+        // Step 5: Convert back to world coordinates by adding center back
+        self.eye = self.center + new_relative_pos;
+        
+        // Step 6: Recompute basis vectors for new camera orientation
+        self.update_basis_vectors();
+    }
+
+    /// Transforms a vector from camera space to world space using basis vectors
+    pub fn basis_change(&self, v: &Vector3) -> Vector3 {
+        // This performs a change of basis transformation
+        // Input: vector in camera coordinate system
+        // Output: same vector expressed in world coordinate system
+        
+        // In camera space coordinates:
+        // - X axis points right
+        // - Y axis points up  
+        // - Z axis points backward (away from what camera sees)
+        //   Note: This follows right-handed convention where camera looks down -Z
+        
+        // The math: to convert from camera space to world space,
+        // we need to express the camera space vector as a linear combination
+        // of world space basis vectors
+        
+        // World X component = v.x * right.x + v.y * up.x - v.z * forward.x
+        // (negative v.z because camera Z points backward, but forward points forward)
+        Vector3::new(
+            v.x * self.right.x + v.y * self.up.x - v.z * self.forward.x,
+            v.x * self.right.y + v.y * self.up.y - v.z * self.forward.y,
+            v.x * self.right.z + v.y * self.up.z - v.z * self.forward.z,
+        )
+        
+        // Example: if v = (1,0,0) in camera space (pointing right),
+        // result will be self.right in world space
+        // if v = (0,0,1) in camera space (pointing backward),
+        // result will be -self.forward in world space
+    }
+}
+
+color_ops.rs:
+use raylib::prelude::Color;
+
+pub trait ColorOps {
+    fn mult_f32(&self, factor: f32) -> Color;
+}
+
+impl ColorOps for Color {
+    fn mult_f32(&self, factor: f32) -> Color {
+        Color::new(
+            (self.r as f32 * factor).min(255.0) as u8,
+            (self.g as f32 * factor).min(255.0) as u8,
+            (self.b as f32 * factor).min(255.0) as u8,
+            self.a,
+        )
+    }
+}
+
+cube.rs:
+use std::sync::Arc;
+use raylib::prelude::Vector3;
+
+use crate::material::Material;
+use crate::ray_intersect::{Intersect, RayIntersect};
+use crate::texture::Texture;
+
+#[derive(Clone, Copy)]
+pub enum Face { PosX, NegX, PosY, NegY, PosZ, NegZ }
+impl Face {
+    #[inline] fn idx(self) -> usize {
+        match self { Face::PosX=>0, Face::NegX=>1, Face::PosY=>2, Face::NegY=>3, Face::PosZ=>4, Face::NegZ=>5 }
+    }
+}
+
+/// AABB con texturas por cara (opcionales, compartidas por Arc)
+pub struct Cube {
+    pub min: Vector3,
+    pub max: Vector3,
+    pub material: Material,
+    face_textures: [Option<Arc<Texture>>; 6],
+}
+
+impl Cube {
+    pub fn from_center_size(center: Vector3, size: Vector3, material: Material) -> Self {
+        let half = size * 0.5;
+        Cube {
+            min: center - half,
+            max: center + half,
+            material,
+            face_textures: [None, None, None, None, None, None],
+        }
+    }
+
+    pub fn new(min: Vector3, max: Vector3, material: Material) -> Self {
+        Cube { min, max, material, face_textures: [None, None, None, None, None, None] }
+    }
+
+    pub fn set_face_texture(&mut self, face: Face, tex: Arc<Texture>) {
+        self.face_textures[face.idx()] = Some(tex);
+    }
+
+    pub fn set_face_textures_from_template(&mut self, tpl: &[Option<Arc<Texture>>; 6]) {
+        self.face_textures = [
+            tpl[0].clone(), tpl[1].clone(), tpl[2].clone(),
+            tpl[3].clone(), tpl[4].clone(), tpl[5].clone(),
+        ];
+    }
+}
+
+impl RayIntersect for Cube {
+    fn ray_intersect(&self, ray_origin: &Vector3, ray_direction: &Vector3) -> Intersect {
+        let inv_dir = Vector3::new(
+            1.0 / ray_direction.x,
+            1.0 / ray_direction.y,
+            1.0 / ray_direction.z,
+        );
+
+        let mut tmin = (self.min.x - ray_origin.x) * inv_dir.x;
+        let mut tmax = (self.max.x - ray_origin.x) * inv_dir.x;
+        if tmin > tmax { std::mem::swap(&mut tmin, &mut tmax); }
+
+        let mut tymin = (self.min.y - ray_origin.y) * inv_dir.y;
+        let mut tymax = (self.max.y - ray_origin.y) * inv_dir.y;
+        if tymin > tymax { std::mem::swap(&mut tymin, &mut tymax); }
+
+        if (tmin > tymax) || (tymin > tmax) { return Intersect::empty(); }
+        if tymin > tmin { tmin = tymin; }
+        if tymax < tmax { tmax = tymax; }
+
+        let mut tzmin = (self.min.z - ray_origin.z) * inv_dir.z;
+        let mut tzmax = (self.max.z - ray_origin.z) * inv_dir.z;
+        if tzmin > tzmax { std::mem::swap(&mut tzmin, &mut tzmax); }
+
+        if (tmin > tzmax) || (tzmin > tmax) { return Intersect::empty(); }
+        if tzmin > tmin { tmin = tzmin; }
+        if tzmax < tmax { tmax = tzmax; }
+
+        let t_hit = if tmin > 0.0 { tmin } else if tmax > 0.0 { tmax } else { f32::INFINITY };
+        if !t_hit.is_finite() { return Intersect::empty(); }
+
+        let point = *ray_origin + *ray_direction * t_hit;
+
+        let eps = 1e-3;
+        let (normal, face) = if (point.x - self.min.x).abs() < eps {
+            (Vector3::new(-1.0, 0.0, 0.0), Face::NegX)
+        } else if (self.max.x - point.x).abs() < eps {
+            (Vector3::new( 1.0, 0.0, 0.0), Face::PosX)
+        } else if (point.y - self.min.y).abs() < eps {
+            (Vector3::new(0.0, -1.0, 0.0), Face::NegY)
+        } else if (self.max.y - point.y).abs() < eps {
+            (Vector3::new(0.0,  1.0, 0.0), Face::PosY)
+        } else if (point.z - self.min.z).abs() < eps {
+            (Vector3::new(0.0, 0.0, -1.0), Face::NegZ)
+        } else {
+            (Vector3::new(0.0, 0.0,  1.0), Face::PosZ)
+        };
+
+        let size = self.max - self.min;
+        let (u, v) = match face {
+            Face::PosX => ( (point.z - self.min.z) / size.z, (self.max.y - point.y) / size.y ),
+            Face::NegX => ( (self.max.z - point.z) / size.z, (self.max.y - point.y) / size.y ),
+            Face::PosY => ( (point.x - self.min.x) / size.x, (point.z - self.min.z) / size.z ),
+            Face::NegY => ( (point.x - self.min.x) / size.x, (self.max.z - point.z) / size.z ),
+            Face::PosZ => ( (point.x - self.min.x) / size.x, (self.max.y - point.y) / size.y ),
+            Face::NegZ => ( (self.max.x - point.x) / size.x, (self.max.y - point.y) / size.y ),
+        };
+
+        let final_material = if let Some(tex) = &self.face_textures[face.idx()] {
+            let tex_color = tex.sample(u, v);
+            Material { diffuse: tex_color, ..self.material }
+        } else {
+            self.material
+        };
+
+        Intersect::new(point, normal, t_hit, final_material)
+    }
+
+    fn aabb(&self) -> (Vector3, Vector3) {
+        (self.min, self.max)
+    }
+}
+
+framebuffer.rs:
+// framebuffer.rs
+
+use raylib::prelude::*;
+
+pub struct Framebuffer {
+    pub width: u32,
+    pub height: u32,
+    pub color_buffer: Image,
+    background_color: Color,
+    current_color: Color,
+}
+
+impl Framebuffer {
+    pub fn new(width: u32, height: u32) -> Self {
+        let color_buffer = Image::gen_image_color(width as i32, height as i32, Color::BLACK);
+        Framebuffer {
+            width,
+            height,
+            color_buffer,
+            background_color: Color::BLACK,
+            current_color: Color::WHITE,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.color_buffer = Image::gen_image_color(self.width as i32, self.height as i32, self.background_color);
+    }
+
+    pub fn set_pixel(&mut self, x: u32, y: u32) {
+        if x < self.width && y < self.height {
+            self.color_buffer.draw_pixel(x as i32, y as i32, self.current_color);
+        }
+    }
+
+    pub fn set_background_color(&mut self, color: Color) {
+        self.background_color = color;
+    }
+
+    pub fn set_current_color(&mut self, color: Color) {
+        self.current_color = color;
+    }
+
+    pub fn _render_to_file(&self, file_path: &str) {
+        self.color_buffer.export_image(file_path);
+    }
+
+    pub fn swap_buffers(
+        &self,
+        window: &mut RaylibHandle,
+        raylib_thread: &RaylibThread,
+    ) {
+        if let Ok(texture) = window.load_texture_from_image(raylib_thread, &self.color_buffer) {
+            let mut renderer = window.begin_drawing(raylib_thread);
+            renderer.draw_texture(&texture, 0, 0, Color::WHITE);
+        }
+    }
+}
+
+light.rs:
+use raylib::prelude::*;
+
+pub struct Light {
+    pub position: Vector3,
+    pub color: Color,
+    pub intensity: f32,
+}
+
+impl Light {
+    pub fn new(position: Vector3, color: Color, intensity: f32) -> Self {
+        Light {
+            position,
+            color,
+            intensity,
+        }
+    }
+}
+
+main.rs:
+use raylib::prelude::*;
+use std::f32::consts::PI;
+use std::sync::Arc;
+
+mod framebuffer;
+mod ray_intersect;
+mod sphere;
+mod camera;
+mod light;
+mod material;
+mod cube;
+mod texture;
+mod scene;
+mod palette; // nuevo
+mod accel;   // nuevo
+
+use framebuffer::Framebuffer;
+use ray_intersect::{Intersect, RayIntersect};
+use camera::Camera;
+use light::Light;
+use material::{Material, vector3_to_color};
+use palette::{Palette, CubeTemplate};
+use accel::UniformGridAccel;
+
+const ORIGIN_BIAS: f32 = 1e-4;
+
+fn procedural_sky(dir: Vector3) -> Vector3 {
+    let d = dir.normalized();
+    let t = (d.y + 1.0) * 0.5;
+
+    let green = Vector3::new(0.1, 0.6, 0.2);
+    let white = Vector3::new(1.0, 1.0, 1.0);
+    let blue  = Vector3::new(0.3, 0.5, 1.0);
+
+    if t < 0.54 {
+        let k = t / 0.55; green * (1.0 - k) + white * k
+    } else if t < 0.55 {
+        white
+    } else if t < 0.8 {
+        let k = (t - 0.55) / 0.25; white * (1.0 - k) + blue * k
+    } else { blue }
+}
+
+fn offset_origin(intersect: &Intersect, direction: &Vector3) -> Vector3 {
+    let offset = intersect.normal * ORIGIN_BIAS;
+    if direction.dot(intersect.normal) < 0.0 { intersect.point - offset } else { intersect.point + offset }
+}
+
+fn reflect(incident: &Vector3, normal: &Vector3) -> Vector3 {
+    *incident - *normal * 2.0 * incident.dot(*normal)
+}
+
+fn refract(incident: &Vector3, normal: &Vector3, refractive_index: f32) -> Option<Vector3> {
+    let mut cosi = incident.dot(*normal).max(-1.0).min(1.0);
+    let mut etai = 1.0;
+    let mut etat = refractive_index;
+    let mut n = *normal;
+
+    if cosi > 0.0 {
+        std::mem::swap(&mut etai, &mut etat);
+        n = -n;
+    } else {
+        cosi = -cosi;
+    }
+
+    let eta = etai / etat;
+    let k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+    if k < 0.0 { None } else { Some(*incident * eta + n * (eta * cosi - k.sqrt())) }
+}
+
+fn cast_shadow(
+    intersect: &Intersect,
+    light: &Light,
+    objects: &[Box<dyn RayIntersect>],
+    accel: &UniformGridAccel,
+) -> f32 {
+    let light_dir = (light.position - intersect.point).normalized();
+    let light_distance = (light.position - intersect.point).length();
+    let shadow_ray_origin = offset_origin(intersect, &light_dir);
+
+    if accel.occluded(&shadow_ray_origin, &light_dir, light_distance, objects) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+pub fn cast_ray(
+    ray_origin: &Vector3,
+    ray_direction: &Vector3,
+    objects: &[Box<dyn RayIntersect>],
+    accel: &UniformGridAccel,
+    light: &Light,
+    depth: u32,
+) -> Vector3 {
+    if depth > 3 { return procedural_sky(*ray_direction); }
+
+    let mut intersect = accel.trace(ray_origin, ray_direction, objects);
+
+    if !intersect.is_intersecting {
+        return procedural_sky(*ray_direction);
+    }
+
+    let light_dir = (light.position - intersect.point).normalized();
+    let view_dir  = (*ray_origin - intersect.point).normalized();
+    let reflect_dir = reflect(&-light_dir, &intersect.normal).normalized();
+
+    let shadow_intensity = cast_shadow(&intersect, light, objects, accel);
+    let light_intensity = light.intensity * (1.0 - shadow_intensity);
+
+    // Half-Lambert (k=0.3) + ambient 0.15
+    let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3).clamp(0.0, 1.0) * light_intensity;
+    let diffuse = intersect.material.diffuse * diffuse_intensity;
+
+    let specular_intensity = view_dir.dot(reflect_dir).max(0.0).powf(intersect.material.specular) * light_intensity;
+    let light_color_v3 = Vector3::new(
+        light.color.r as f32 / 255.0,
+        light.color.g as f32 / 255.0,
+        light.color.b as f32 / 255.0
+    );
+    let specular = light_color_v3 * specular_intensity;
+
+    let albedo = intersect.material.albedo;
+    let phong_color = (diffuse + intersect.material.diffuse * 0.15) * albedo[0] + specular * albedo[1];
+
+    // Reflections
+    let reflectivity = intersect.material.albedo[2];
+    let reflect_color = if reflectivity > 0.0 {
+        let reflect_dir = reflect(ray_direction, &intersect.normal).normalized();
+        let reflect_origin = offset_origin(&intersect, &reflect_dir);
+        cast_ray(&reflect_origin, &reflect_dir, objects, accel, light, depth + 1)
+    } else { Vector3::zero() };
+
+    // Refractions
+    let transparency = intersect.material.albedo[3];
+    let refract_color = if transparency > 0.0 {
+        if let Some(refract_dir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
+            let refract_origin = offset_origin(&intersect, &refract_dir);
+            cast_ray(&refract_origin, &refract_dir, objects, accel, light, depth + 1)
+        } else {
+            let reflect_dir = reflect(ray_direction, &intersect.normal).normalized();
+            let reflect_origin = offset_origin(&intersect, &reflect_dir);
+            cast_ray(&reflect_origin, &reflect_dir, objects, accel, light, depth + 1)
+        }
+    } else { Vector3::zero() };
+
+    phong_color * (1.0 - reflectivity - transparency) + reflect_color * reflectivity + refract_color * transparency
+}
+
+pub fn render(framebuffer: &mut Framebuffer, objects: &[Box<dyn RayIntersect>], accel: &UniformGridAccel, camera: &Camera, light: &Light) {
+    let width = framebuffer.width as f32;
+    let height = framebuffer.height as f32;
+    let aspect_ratio = width / height;
+    let fov = PI / 3.0;
+    let perspective_scale = (fov * 0.5).tan();
+
+    for y in 0..framebuffer.height {
+        for x in 0..framebuffer.width {
+            let screen_x = (2.0 * x as f32) / width - 1.0;
+            let screen_y = -(2.0 * y as f32) / height + 1.0;
+
+            let screen_x = screen_x * aspect_ratio * perspective_scale;
+            let screen_y = screen_y * perspective_scale;
+
+            let ray_direction = Vector3::new(screen_x, screen_y, -1.0).normalized();
+            let rotated_direction = camera.basis_change(&ray_direction);
+
+            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, accel, light, 0);
+            let pixel_color = vector3_to_color(pixel_color_v3);
+
+            framebuffer.set_current_color(pixel_color);
+            framebuffer.set_pixel(x, y);
+        }
+    }
+}
+
+fn main() {
+    let window_width = 1300;
+    let window_height = 900;
+ 
+    let (mut window, thread) = raylib::init()
+        .size(window_width, window_height)
+        .title("Raytracer Example")
+        .log_level(TraceLogLevel::LOG_WARNING)
+        .build();
+
+    let mut framebuffer = Framebuffer::new(window_width as u32, window_height as u32);
+
+    // ======= PALETA: 'X' =======
+    // material base para 'X'
+    let stone = Material::new(
+        Vector3::new(0.55, 0.55, 0.55), // gris piedra
+        25.0,
+        [0.85, 0.15, 0.0, 0.0],
+        0.0,
+    );
+
+    // Si quieres texturas, descomenta:
+    // let tex_all = Arc::new(Texture::from_file("assets/textures/stone.png"));
+    // let tpl_x = CubeTemplate::with_same_texture(stone, tex_all);
+
+    let tpl_x = CubeTemplate::material_only(stone);
+
+    let mut palette = Palette::new();
+    palette.set('X', tpl_x);
+
+    // ===== CARGA ESCENA ASCII SIN GAPS =====
+    let cube_size = Vector3::new(1.0, 1.0, 1.0);
+    let mut params = scene::default_params(cube_size);
+    params.gap = Vector3::new(0.0, 0.0, 0.0); // SIN huecos
+    params.origin = Vector3::new(0.0, 0.0, 0.0);
+    params.y0 = -0.5;
+    params.y_step = 1.0;
+
+    let default_mat = stone; // para celdas que no tengan entrada en paleta (by design no habrá)
+
+    let mut objects: Vec<Box<dyn RayIntersect>> =
+        scene::load_ascii_layers_with_palette("assets/scene", &params, &palette, default_mat)
+            .expect("Error leyendo assets/scene");
+
+    // ===== Aceleración por grilla =====
+    // Celda ~ tamaño del cubo → muy eficiente para mundos voxelados.
+    let accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
+
+    // Cámara
+    let mut camera = Camera::new(
+        Vector3::new(0.0, 1.5, 5.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+    );
+    let rotation_speed = PI / 100.0;
+
+    // Luz
+    let light = Light::new(
+        Vector3::new(1.0, -1.0, 5.0),
+        Color::new(255, 255, 255, 255),
+        1.5,
+    );
+
+    while !window.window_should_close() {
+        if window.is_key_down(KeyboardKey::KEY_LEFT)  { camera.orbit(rotation_speed, 0.0); }
+        if window.is_key_down(KeyboardKey::KEY_RIGHT) { camera.orbit(-rotation_speed, 0.0); }
+        if window.is_key_down(KeyboardKey::KEY_UP)    { camera.orbit(0.0, -rotation_speed); }
+        if window.is_key_down(KeyboardKey::KEY_DOWN)  { camera.orbit(0.0,  rotation_speed); }
+
+        framebuffer.clear();
+        render(&mut framebuffer, &objects, &accel, &camera, &light);
+        framebuffer.swap_buffers(&mut window, &thread);
+    }
+}
+
+material.rs:
+use raylib::prelude::{Color, Vector3};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Material {
+    pub diffuse: Vector3,
+    pub albedo: [f32; 4],
+    pub specular: f32,
+    pub refractive_index: f32,
+}
+
+impl Material {
+    pub fn new(diffuse: Vector3, specular: f32, albedo: [f32; 4], refractive_index: f32) -> Self {
+        Material {
+            diffuse,
+            albedo,
+            specular,
+            refractive_index,
+        }
+    }
+
+    pub fn black() -> Self {
+        Material {
+            diffuse: Vector3::zero(),
+            albedo: [0.0, 0.0, 0.0, 0.0],
+            specular: 0.0,
+            refractive_index: 0.0,
+        }
+    }
+}
+
+pub fn vector3_to_color(v: Vector3) -> Color {
+    Color::new(
+        (v.x * 255.0).min(255.0) as u8,
+        (v.y * 255.0).min(255.0) as u8,
+        (v.z * 255.0).min(255.0) as u8,
+        255,
+    )
+}
+
+palette.rs:
+// palette.rs
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::material::Material;
+use crate::texture::Texture;
+
+/// Plantilla para instanciar cubos sin copiar recursos.
+/// Las texturas se comparten por Arc.
+#[derive(Clone)]
+pub struct CubeTemplate {
+    pub material: Material,
+    pub face_textures: [Option<Arc<Texture>>; 6],
+}
+
+impl CubeTemplate {
+    pub fn material_only(material: Material) -> Self {
+        CubeTemplate {
+            material,
+            face_textures: [None, None, None, None, None, None],
+        }
+    }
+
+    /// Misma textura en las 6 caras
+    pub fn with_same_texture(material: Material, tex: Arc<Texture>) -> Self {
+        CubeTemplate {
+            face_textures: [
+                Some(tex.clone()), Some(tex.clone()), Some(tex.clone()),
+                Some(tex.clone()), Some(tex.clone()), Some(tex),
+            ],
+            material,
+        }
+    }
+}
+
+pub struct Palette {
+    map: HashMap<char, CubeTemplate>,
+}
+
+impl Palette {
+    pub fn new() -> Self {
+        Palette { map: HashMap::new() }
+    }
+    pub fn set(&mut self, ch: char, tpl: CubeTemplate) {
+        self.map.insert(ch, tpl);
+    }
+    pub fn get(&self, ch: char) -> Option<&CubeTemplate> {
+        self.map.get(&ch)
+    }
+}
+
+ray_intersect.rs:
+use raylib::prelude::Vector3;
+use crate::material::Material;
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct Intersect {
+    pub point: Vector3,
+    pub normal: Vector3,
+    pub distance: f32,
+    pub is_intersecting: bool,
+    pub material: Material,
+}
+
+impl Intersect {
+    pub fn new(point: Vector3, normal: Vector3, distance: f32, material: Material) -> Self {
+        Intersect {
+            point,
+            normal,
+            distance,
+            is_intersecting: true,
+            material,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Intersect {
+            point: Vector3::zero(),
+            normal: Vector3::zero(),
+            distance: 0.0,
+            is_intersecting: false,
+            material: Material::black(),
+        }
+    }
+}
+
+pub trait RayIntersect {
+    fn ray_intersect(&self, ray_origin: &Vector3, ray_direction: &Vector3) -> Intersect;
+
+    /// AABB en espacio mundo para aceleración (grilla/BVH).
+    fn aabb(&self) -> (Vector3, Vector3);
+}
+
+
+scene.rs:
+// scene.rs
+use std::{fs, io};
+
+use raylib::prelude::Vector3;
+
+use crate::cube::Cube;
+use crate::material::Material;
+use crate::palette::{CubeTemplate, Palette};
+use crate::ray_intersect::RayIntersect;
+
+/// Parámetros para construir la escena a partir de ASCII layers.
+pub struct SceneParams {
+    pub cube_size: Vector3,
+    pub gap: Vector3,
+    pub origin: Vector3,
+    pub y0: f32,
+    pub y_step: f32,
+    pub any_non_whitespace_is_solid: bool,
+    pub solid_chars: Vec<char>,
+}
+
+pub fn load_ascii_layers_with_palette(
+    dir: &str,
+    params: &SceneParams,
+    palette: &Palette,
+    default_material: Material,
+) -> io::Result<Vec<Box<dyn RayIntersect>>> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let p = e.path();
+            p.is_file() && p.extension().map(|ext| ext == "txt").unwrap_or(false)
+        })
+        .collect();
+
+    entries.sort_by_key(|e| e.path());
+
+    let mut objects: Vec<Box<dyn RayIntersect>> = Vec::new();
+
+    for (layer_idx, entry) in entries.into_iter().enumerate() {
+        let path = entry.path();
+        let text = fs::read_to_string(&path)?;
+
+        let mut lines: Vec<String> = text
+            .lines()
+            .map(|s| s.trim_end_matches(&['\r', '\n'][..]).to_string())
+            .collect();
+
+        while matches!(lines.first(), Some(s) if s.trim().is_empty()) { lines.remove(0); }
+        while matches!(lines.last(), Some(s) if s.trim().is_empty()) { lines.pop(); }
+        if lines.is_empty() { continue; }
+
+        let rows = lines.len();
+        let cols = lines.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+
+        // pasos entre centros: SIN GAPS si gap = 0
+        let step_x = params.cube_size.x + params.gap.x;
+        let step_z = params.cube_size.z + params.gap.z;
+
+        let half_w = (cols as f32 - 1.0) * 0.5;
+        let half_h = (rows as f32 - 1.0) * 0.5;
+
+        let y_center = params.y0 + layer_idx as f32 * params.y_step;
+
+        for (r, line) in lines.iter().enumerate() {
+            let mut chars = line.chars().collect::<Vec<char>>();
+            if chars.len() < cols { chars.resize(cols, ' '); }
+
+            for c in 0..cols {
+                let ch = chars[c];
+
+                // sólido si está en paleta o según flags
+                let has_tpl = palette.get(ch).is_some();
+                let solid = if params.any_non_whitespace_is_solid {
+                    !ch.is_whitespace()
+                } else {
+                    params.solid_chars.contains(&ch) || has_tpl
+                };
+                if !solid { continue; }
+
+                let x = (c as f32 - half_w) * step_x;
+                let z = (r as f32 - half_h) * step_z;
+                let center = params.origin + Vector3::new(x, y_center, z);
+
+                let mut cube = Cube::from_center_size(center, params.cube_size, default_material);
+
+                // aplica plantilla si existe
+                if let Some(tpl) = palette.get(ch) {
+                    cube.material = tpl.material;
+                    cube.set_face_textures_from_template(&tpl.face_textures);
+                }
+                objects.push(Box::new(cube));
+            }
+        }
+    }
+
+    Ok(objects)
+}
+
+pub fn default_params(cube_size: Vector3) -> SceneParams {
+    SceneParams {
+        cube_size,
+        gap: Vector3::new(0.0, 0.0, 0.0), // << sin espacios
+        origin: Vector3::zero(),
+        y0: -cube_size.y * 0.5,
+        y_step: cube_size.y,
+        any_non_whitespace_is_solid: false, // << usaremos paleta por carácter
+        solid_chars: vec!['X'],             // << arranca con 'X'
+    }
+}
+
+sphere.rs:
+use crate::material::Material;
+use crate::ray_intersect::{Intersect, RayIntersect};
+use raylib::prelude::Vector3;
+
+pub struct Sphere {
+    pub center: Vector3,
+    pub radius: f32,
+    pub material: Material,
+}
+
+impl RayIntersect for Sphere {
+    fn ray_intersect(&self, ray_origin: &Vector3, ray_direction: &Vector3) -> Intersect {
+        let oc = *ray_origin - self.center;
+
+        let a = ray_direction.dot(*ray_direction);
+        let b = 2.0 * oc.dot(*ray_direction);
+        let c = oc.dot(oc) - self.radius * self.radius;
+
+        let discriminant = b * b - 4.0 * a * c;
+
+        if discriminant > 0.0 {
+            let t = (-b - discriminant.sqrt()) / (2.0 * a);
+            if t > 0.0 {
+                let point = *ray_origin + *ray_direction * t;
+                let normal = (point - self.center).normalized();
+                let distance = t;
+
+                return Intersect::new(point, normal, distance, self.material);
+            }
+        }
+
+        Intersect::empty()
+    }
+
+    fn aabb(&self) -> (Vector3, Vector3) {
+        let r = Vector3::new(self.radius, self.radius, self.radius);
+        (self.center - r, self.center + r)
+    }
+}
+
+texture.rs:
+use raylib::prelude::*;
+
+/// Textura CPU-side con muestreo por UV en [0,1).
+/// Guarda el buffer de colores para muestrear sin pedir &mut.
+pub struct Texture {
+    width: i32,
+    height: i32,
+    pixels: ImageColors, // Box<[Color]> administrado por raylib-rs
+}
+
+impl Texture {
+    pub fn from_file(path: &str) -> Self {
+        let img = Image::load_image(path).expect("No se pudo cargar la textura");
+        let w = img.width();
+        let h = img.height();
+        let pixels = img.get_image_data(); // row-major, origen top-left
+        Texture { width: w, height: h, pixels }
+    }
+
+    /// Devuelve color lineal [0,1] por UV, con wrap repetido.
+    /// Convención: v=0 es la FILA SUPERIOR (top), v=1 la inferior (bottom).
+    #[inline]
+    pub fn sample(&self, mut u: f32, mut v: f32) -> Vector3 {
+        // Wrap repetición a [0,1)
+        u = u.fract();
+        if u < 0.0 { u += 1.0; }
+        v = v.fract();
+        if v < 0.0 { v += 1.0; }
+
+        // Muestreo por centro de texel: (u*W - 0.5, v*H - 0.5) y floor()
+        let sx = u * self.width as f32  - 0.5;
+        let sy = v * self.height as f32 - 0.5;
+
+        let xi = sx.floor().clamp(0.0, self.width  as f32 - 1.0)  as usize;
+        let yi = sy.floor().clamp(0.0, self.height as f32 - 1.0)  as usize;
+        let idx = yi * self.width as usize + xi;
+
+        let c = self.pixels[idx];
+        Vector3::new(c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0)
+    }
+}
+
