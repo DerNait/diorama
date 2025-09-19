@@ -9,6 +9,7 @@ mod camera;
 mod light;
 mod material;
 mod cube;
+mod slab;
 mod texture;
 mod scene;
 mod palette;
@@ -423,6 +424,8 @@ fn main() {
     let log_side    = Arc::new(Texture::from_file("assets/spruce_log/spruce_log.png"));
 
     let planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
+    let uslab_planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
+    let lslab_planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
     
     let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
     let glass_tpl = CubeTemplate::with_same_texture_image_alpha_window(
@@ -450,6 +453,8 @@ fn main() {
     palette.set('G', glass_tpl);
     palette.set('l', leaves_tpl);
     palette.set('H', CubeTemplate::with_same_texture(ice_mat,  ice));
+    palette.set('_', CubeTemplate::with_same_texture(planks_mat, uslab_planks));
+    palette.set('-', CubeTemplate::with_same_texture(planks_mat, lslab_planks));
 
     // ===== CARGA ESCENA ASCII SIN GAPS =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);

@@ -1,15 +1,15 @@
--                       -
+e                       e
                          
                          
                          
                          
                          
-   XXXX                  
-  XPPPPX                 
-  XPPPPX                 
-  XPPPPX                 
-  XPPPPX                 
-   XXXX                  
+   ____                  
+  _PPPP_                 
+  _PPPP_                 
+  _PPPP_                 
+  _PPPP_                 
+   ____                  
                          
                          
                     l    
@@ -22,4 +22,4 @@
 lllll               lllll
 llLll                lll 
 lllll                    
- lll                    -
+ lll                    e

@@ -7,6 +7,7 @@ use crate::cube::Cube;
 use crate::material::Material;
 use crate::palette::{CubeTemplate, Palette};
 use crate::ray_intersect::RayIntersect;
+use crate::slab::{Slab, SlabHalf, Face as SlabFace};
 
 /// Parámetros para construir la escena a partir de ASCII layers.
 pub struct SceneParams {
@@ -71,10 +72,11 @@ pub fn load_ascii_layers_with_palette(
 
                 // sólido si está en paleta o según flags
                 let has_tpl = palette.get(ch).is_some();
+                let is_slab = ch == '_' || ch == '-';
                 let solid = if params.any_non_whitespace_is_solid {
                     !ch.is_whitespace()
                 } else {
-                    params.solid_chars.contains(&ch) || has_tpl
+                    params.solid_chars.contains(&ch) || has_tpl || is_slab
                 };
                 if !solid { continue; }
 
@@ -82,14 +84,25 @@ pub fn load_ascii_layers_with_palette(
                 let z = (r as f32 - half_h) * step_z;
                 let center = params.origin + Vector3::new(x, y_center, z);
 
-                let mut cube = Cube::from_center_size(center, params.cube_size, default_material);
+                if is_slab {
+                    // Crear SLAB (mitad baja '_' o mitad alta '-')
+                    let half = if ch == '_' { SlabHalf::Bottom } else { SlabHalf::Top };
+                    let mut slab = Slab::from_block_center_size(center, params.cube_size, half, default_material);
 
-                // aplica plantilla si existe
-                if let Some(tpl) = palette.get(ch) {
-                    cube.material = tpl.material;
-                    cube.set_face_textures_from_template(&tpl.face_textures);
+                    if let Some(tpl) = palette.get(ch) {
+                        slab.material = tpl.material;
+                        slab.set_face_textures_from_template(&tpl.face_textures);
+                    }
+                    objects.push(Box::new(slab));
+                } else {
+                    // Cubo estándar
+                    let mut cube = Cube::from_center_size(center, params.cube_size, default_material);
+                    if let Some(tpl) = palette.get(ch) {
+                        cube.material = tpl.material;
+                        cube.set_face_textures_from_template(&tpl.face_textures);
+                    }
+                    objects.push(Box::new(cube));
                 }
-                objects.push(Box::new(cube));
             }
         }
     }
@@ -104,7 +117,7 @@ pub fn default_params(cube_size: Vector3) -> SceneParams {
         origin: Vector3::zero(),
         y0: -cube_size.y * 0.5,
         y_step: cube_size.y,
-        any_non_whitespace_is_solid: false, // << usaremos paleta por carácter
-        solid_chars: vec!['X'],             // << arranca con 'X'
+        any_non_whitespace_is_solid: false,      // << usamos paleta por carácter
+        solid_chars: vec!['X', '_', '-'],        // << incluye slabs por defecto
     }
 }

@@ -1,4 +1,4 @@
--                       -
+e                       e
                          
                          
                          
@@ -13,9 +13,9 @@
                        XX
                        XX
                         X
-X      XPXXXXPX     L   X
-XXX    XPXXXXPX          
-XXXX   XPXXXXPX          
+X      _P----P_     L   X
+XXX    _P----P_          
+XXXX   _P----P_          
 XXXX                   XX
 XXXX                  XXX
 XXXXXX               XDXX
