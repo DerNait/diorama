@@ -345,7 +345,18 @@ fn main() {
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
     );
-    let rotation_speed = PI / 100.0;
+
+    // --- NUEVO: configura la cámara orbital de forma centralizada
+    camera.set_config(camera::CameraConfig {
+        orbit_sensitivity_yaw:   1.0,   // súbele si quieres girar más rápido
+        orbit_sensitivity_pitch: 1.0,
+        zoom_sensitivity:        0.5,   // controla “lo que avanza” cada paso de zoom
+        min_pitch:  -1.45, // -83°
+        max_pitch:   1.45, //  83°
+        min_distance: 0.5,  // mínimo acercamiento
+        max_distance: 2000.0, // MUY grande pero manejable
+    });
+    let rotation_speed = PI / 100.0; // puedes mantener esta constante para inputs discretos
 
     // ===== Luz (mut) =====
     // Cambia a Point si prefieres:
@@ -358,10 +369,13 @@ fn main() {
 
     while !window.window_should_close() {
         // Cámara orbit
-        if window.is_key_down(KeyboardKey::KEY_LEFT)  { camera.orbit(rotation_speed, 0.0); }
+        if window.is_key_down(KeyboardKey::KEY_LEFT)  { camera.orbit( rotation_speed, 0.0); }
         if window.is_key_down(KeyboardKey::KEY_RIGHT) { camera.orbit(-rotation_speed, 0.0); }
-        if window.is_key_down(KeyboardKey::KEY_UP)    { camera.orbit(0.0, -rotation_speed); }
-        if window.is_key_down(KeyboardKey::KEY_DOWN)  { camera.orbit(0.0,  rotation_speed); }
+        if window.is_key_down(KeyboardKey::KEY_DOWN)    { camera.orbit(0.0, -rotation_speed); }
+        if window.is_key_down(KeyboardKey::KEY_UP)  { camera.orbit(0.0,  rotation_speed); }
+
+        if window.is_key_down(KeyboardKey::KEY_PAGE_UP)   { camera.zoom(-0.5); }
+        if window.is_key_down(KeyboardKey::KEY_PAGE_DOWN) { camera.zoom( 0.5); }
 
         // Toggle tipo de luz
         if window.is_key_pressed(KeyboardKey::KEY_ONE) { light.kind = LightKind::Point; }
