@@ -4,22 +4,22 @@
                          
                          
                          
-   XXXX                  
-  X    X                 
-  X    X                 
-  X    X                 
-  X    X                 
-   XXXX                  
+   LGGL                  
+  L    L                 
+  G    G                 
+  G    G                 
+  L    L                 
+   LGGL                  
                          
                          
-                    X    
-         XXXX      XXX   
-         XXXX       X    
+                    l    
+         XXXX      lLl   
+         XXXX       l    
          XXXX            
                          
                          
-                      X  
+                      L  
                          
-  X                      
+  L                      
                          
 -                       -

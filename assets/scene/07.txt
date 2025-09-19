@@ -3,23 +3,23 @@
                          
                          
                          
-   XXXX                  
-  XXXXXX                 
- XX    XX                
- XX    XX                
- XX    XX                
- XX    XX                
-  XXXXXX                 
-   XXXX                  
-                   XXX   
-                  XXXXX  
-                  XXXXX  
-                  XXXXX  
-                   XXX   
+   PPPP                  
+  PLPPLP                 
+ PL    LP                
+ PP    PP                
+ PP    PP                
+ PL    LP                
+  PLPPLP                 
+   PPPP                  
+                   lll   
+                  lllll  
+                  llLll  
+                  lllll  
+                   lll   
                          
                          
-                      X  
-  X                      
- XXX                     
-  X                      
+                      L  
+  l                      
+ lLl                     
+  l                      
 -                       -

@@ -312,15 +312,29 @@ fn main() {
     );
 
     use std::sync::Arc;
-    let grass_top   = Arc::new(Texture::from_file("assets/cube/posy.png"));
-    let grass_side  = Arc::new(Texture::from_file("assets/cube/posx.png"));
-    let dirt        = Arc::new(Texture::from_file("assets/cube/negy.png"));
-    let crate_tex   = Arc::new(Texture::from_file("assets/cube/negy.png"));
+    let grass_top   = Arc::new(Texture::from_file("assets/snow_grass/posy.png"));
+    let grass_side  = Arc::new(Texture::from_file("assets/snow_grass/posx.png"));
+    let grass_bottom= Arc::new(Texture::from_file("assets/snow_grass/negy.png"));
+    let dirt_tex    = Arc::new(Texture::from_file("assets/dirt/dirt.png"));
+
+    let log_top     = Arc::new(Texture::from_file("assets/spruce_log/spruce_log_top.png"));
+    let log_bottom  = Arc::new(Texture::from_file("assets/spruce_log/spruce_log_top.png"));
+    let log_side    = Arc::new(Texture::from_file("assets/spruce_log/spruce_log.png"));
+
+    let planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
+    
+    let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
+
+    let leaves = Arc::new(Texture::from_file("assets/spruce_leaves/spruce_leaves.png"));
 
     let mut palette = Palette::new();
-    palette.set('G', CubeTemplate::material_only(stone));
-    palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, dirt, grass_side));
-    palette.set('C', CubeTemplate::with_same_texture(crate_mat, crate_tex));
+    //palette.set('G', CubeTemplate::material_only(stone));
+    palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
+    palette.set('D', CubeTemplate::with_same_texture(crate_mat,  dirt_tex));
+    palette.set('L', CubeTemplate::with_top_bottom_sides(crate_mat,  log_top, log_bottom, log_side));
+    palette.set('P', CubeTemplate::with_same_texture(crate_mat,  planks));
+    palette.set('G', CubeTemplate::with_same_texture(crate_mat,  glass));
+    palette.set('l', CubeTemplate::with_same_texture(crate_mat,  leaves));
 
     // ===== CARGA ESCENA ASCII SIN GAPS =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);
