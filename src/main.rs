@@ -167,7 +167,55 @@ pub fn cast_ray(
         }
     } else { Vector3::zero() };
 
-    phong_color * (1.0 - reflectivity - transparency) + reflect_color * reflectivity + refract_color * transparency
+    // ===== NUEVO: “visible-light glint” (puntito blanco en superficies reflectivas) =====
+    let mut glint = Vector3::zero();
+    let mirror_dir = reflect(ray_direction, &intersect.normal).normalized();   // dirección de espejo (vista->reflejo)
+    let mirror_origin = offset_origin(&intersect, &mirror_dir);
+
+    // usa el color de la luz ya convertido arriba:
+    let light_color_v3 = Vector3::new(
+        light.color.r as f32 / 255.0,
+        light.color.g as f32 / 255.0,
+        light.color.b as f32 / 255.0
+    );
+
+    // Ajustes del tamaño/intensidad del puntito:
+    let hardness_point = 800.0;     // mayor = punto más pequeño (point light)
+    let hardness_dir   = 800.0;     // mayor = punto más pequeño (directional)
+    let gain           = 1.0;       // multiplicador general
+    let refl_bias      = (reflectivity + 0.05).min(1.0); // que aparezca sobre materiales más “espejados”
+
+    match light.kind {
+        LightKind::Point => {
+            let to_l   = light.position - mirror_origin;
+            let dist   = to_l.length();
+            if dist > 0.0 {
+                let ldir = to_l / dist;
+                // ¿el rayo espejo apunta (casi) a la luz?
+                let align = mirror_dir.dot(ldir).max(0.0);
+                if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, dist, objects) {
+                    // caída suave con distancia y mancha ultrapequeña por potencia
+                    let falloff = 1.0 / (1.0 + dist * dist);
+                    let s = gain * light.intensity * falloff * align.powf(hardness_point) * refl_bias;
+                    glint = light_color_v3 * s;
+                }
+            }
+        }
+        LightKind::Directional => {
+            let ldir   = -light.direction; // llega “del infinito”
+            let align  = mirror_dir.dot(ldir).max(0.0);
+            if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, f32::INFINITY, objects) {
+                let s = gain * light.intensity * align.powf(hardness_dir) * refl_bias;
+                glint = light_color_v3 * s;
+            }
+        }
+    }
+
+    // Color final con glint añadido
+    phong_color * (1.0 - reflectivity - transparency)
+        + reflect_color * reflectivity
+        + refract_color * transparency
+        + glint
 }
 
 pub fn render(
@@ -291,24 +339,61 @@ fn main() {
         .expect("No se pudo crear la textura persistente");
     framebuffer.attach_texture(texture);
 
-    // ======= PALETA =======
+    // ======= PALETA (MATERIALES ESPECÍFICOS POR BLOQUE) =======
     let stone = Material::new(
         Vector3::new(0.55, 0.55, 0.55),
-        25.0,
-        [0.85, 0.15, 0.0, 0.0],
+        20.0,
+        [0.90, 0.10, 0.0, 0.0],
         0.0,
     );
+
     let grass_mat = Material::new(
         Vector3::new(1.0, 1.0, 1.0),
-        20.0,
-        [0.9, 0.1, 0.0, 0.0],
+        10.0,
+        [0.95, 0.05, 0.0, 0.0],
         0.0,
     );
-    let crate_mat = Material::new(
+
+    let dirt_mat = Material::new(
         Vector3::new(1.0, 1.0, 1.0),
-        30.0,
-        [0.8, 0.2, 0.0, 0.0],
+        8.0,
+        [0.98, 0.02, 0.0, 0.0],
         0.0,
+    );
+
+    let log_mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0),
+        15.0,
+        [0.92, 0.08, 0.0, 0.0],
+        0.0,
+    );
+
+    let planks_mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0),
+        12.0,
+        [0.90, 0.10, 0.0, 0.0],
+        0.0,
+    );
+
+    let glass_mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0),
+        120.0,                 // highlight duro
+        [0.80, 0.15, 0.05, 0.0], // difuso bajo, especular visible, 5% reflejo, 80% transmisión
+        1.50,                  // IOR del vidrio
+    );
+
+    let leaves_mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0),
+        35.0,
+        [0.92, 0.08, 0.0, 0.0],
+        0.0,
+    );
+
+    let ice_mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0),
+        10.0,
+        [0.80, 0.10, 0.20, 0.05],
+        1.31,
     );
 
     use std::sync::Arc;
@@ -325,14 +410,14 @@ fn main() {
     
     let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
     let glass_tpl = CubeTemplate::with_same_texture_black_transparent(
-        crate_mat,
+        glass_mat,
         glass.clone(),
         0.05,
     );
 
     let leaves = Arc::new(Texture::from_file("assets/spruce_leaves/spruce_leaves.png"));
     let leaves_tpl = CubeTemplate::with_same_texture_tinted_black_transparent(
-        crate_mat,
+        leaves_mat,
         leaves.clone(),
         Vector3::new(0.2, 0.6, 0.25),
         0.05,
@@ -343,12 +428,12 @@ fn main() {
     let mut palette = Palette::new();
     //palette.set('G', CubeTemplate::material_only(stone));
     palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
-    palette.set('D', CubeTemplate::with_same_texture(crate_mat,  dirt_tex));
-    palette.set('L', CubeTemplate::with_top_bottom_sides(crate_mat,  log_top, log_bottom, log_side));
-    palette.set('P', CubeTemplate::with_same_texture(crate_mat,  planks));
+    palette.set('D', CubeTemplate::with_same_texture(dirt_mat,  dirt_tex));
+    palette.set('L', CubeTemplate::with_top_bottom_sides(log_mat,  log_top, log_bottom, log_side));
+    palette.set('P', CubeTemplate::with_same_texture(planks_mat,  planks));
     palette.set('G', glass_tpl);
     palette.set('l', leaves_tpl);
-    palette.set('H', CubeTemplate::with_same_texture(crate_mat,  ice));
+    palette.set('H', CubeTemplate::with_same_texture(ice_mat,  ice));
 
     // ===== CARGA ESCENA ASCII SIN GAPS =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);
