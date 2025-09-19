@@ -475,7 +475,7 @@ fn main() {
 
     // Cámara
     let mut camera = Camera::new(
-        Vector3::new(0.0, 1.5, 5.0),
+        Vector3::new(20.0, 10.0, 20.0),
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
     );
