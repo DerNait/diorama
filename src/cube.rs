@@ -4,6 +4,7 @@ use raylib::prelude::Vector3;
 use crate::material::Material;
 use crate::ray_intersect::{Intersect, RayIntersect};
 use crate::texture::Texture;
+use crate::palette::{FaceStyle, TexStyle};
 
 #[derive(Clone, Copy)]
 pub enum Face { PosX, NegX, PosY, NegY, PosZ, NegZ }
@@ -18,7 +19,7 @@ pub struct Cube {
     pub min: Vector3,
     pub max: Vector3,
     pub material: Material,
-    face_textures: [Option<Arc<Texture>>; 6],
+    face_textures: [Option<FaceStyle>; 6],
 }
 
 impl Cube {
@@ -36,15 +37,54 @@ impl Cube {
         Cube { min, max, material, face_textures: [None, None, None, None, None, None] }
     }
 
+    /// Compatibilidad: setea textura en estilo NORMAL
     pub fn set_face_texture(&mut self, face: Face, tex: Arc<Texture>) {
-        self.face_textures[face.idx()] = Some(tex);
+        self.face_textures[face.idx()] = Some(FaceStyle { tex, style: TexStyle::Normal });
     }
 
-    pub fn set_face_textures_from_template(&mut self, tpl: &[Option<Arc<Texture>>; 6]) {
+    /// NUEVO: setear textura con estilo
+    pub fn set_face_texture_styled(&mut self, face: Face, tex: Arc<Texture>, style: TexStyle) {
+        self.face_textures[face.idx()] = Some(FaceStyle { tex, style });
+    }
+
+    pub fn set_face_textures_from_template(&mut self, tpl: &[Option<FaceStyle>; 6]) {
         self.face_textures = [
             tpl[0].clone(), tpl[1].clone(), tpl[2].clone(),
             tpl[3].clone(), tpl[4].clone(), tpl[5].clone(),
         ];
+    }
+}
+
+#[inline]
+fn luminance(rgb: Vector3) -> f32 {
+    // Coeficientes Rec.709 aproximados
+    (rgb.x * 0.2126 + rgb.y * 0.7152 + rgb.z * 0.0722).clamp(0.0, 1.0)
+}
+
+/// Aplica el estilo de muestreo. Devuelve:
+/// - Some(color) si el texel es visible
+/// - None si el texel debe considerarse transparente (alpha-test)
+fn sample_with_style(tex: &Texture, u: f32, v: f32, style: &TexStyle) -> Option<Vector3> {
+    let base = tex.sample_clamp(u, v); // 0..1
+    match style {
+        TexStyle::Normal => Some(base),
+
+        TexStyle::GrayscaleTint { color } => {
+            let a = luminance(base);
+            Some(Vector3::new(color.x * a, color.y * a, color.z * a))
+        }
+
+        TexStyle::BlackIsTransparent { threshold } => {
+            let a = luminance(base);
+            if a <= *threshold { None } else { Some(base) }
+        }
+
+        TexStyle::GrayscaleTintBlackTransparent { color, threshold } => {
+            let a = luminance(base);
+            if a <= *threshold { None } else {
+                Some(Vector3::new(color.x * a, color.y * a, color.z * a))
+            }
+        }
     }
 }
 
@@ -71,13 +111,14 @@ impl RayIntersect for Cube {
             return Intersect::empty();
         }
 
+        // NOTA: si hubiera alpha-test y el primer texel cae “transparente”,
+        // no hacemos un segundo “raycast” interno — para cubos voxel está ok.
         let t_hit = if t_enter > 0.0 { t_enter } else { t_exit };
         if !t_hit.is_finite() { return Intersect::empty(); }
 
         let p = *ro + *rd * t_hit;
 
-        // Eje de la cara golpeada = aquel que “define” t_enter (el mayor de tmin_*)
-        // En empates (arista), la prioridad X>Y>Z es estable y evita parpadeo.
+        // Eje de la cara golpeada
         let face = if t_enter == tmin_x || (tmin_x > tmin_y && tmin_x > tmin_z) {
             if rd.x > 0.0 { Face::NegX } else { Face::PosX }
         } else if t_enter == tmin_y || (tmin_y > tmin_z) {
@@ -95,29 +136,34 @@ impl RayIntersect for Cube {
             Face::NegZ => Vector3::new( 0.0, 0.0,-1.0),
         };
 
-        // UV por cara (misma convención que traías)
+        // UV por cara
         let size = self.max - self.min;
         let (mut u, mut v) = match face {
-            // laterales X: u = a lo largo de Z, v hacia -Y (imagen top->v=0)
             Face::PosX => ( (p.z - self.min.z) / size.z, (self.max.y - p.y) / size.y ),
             Face::NegX => ( (self.max.z - p.z) / size.z, (self.max.y - p.y) / size.y ),
-            // tapa/base
             Face::PosY => ( (p.x - self.min.x) / size.x, (p.z - self.min.z) / size.z ),
             Face::NegY => ( (p.x - self.min.x) / size.x, (self.max.z - p.z) / size.z ),
-            // frente/fondo
             Face::PosZ => ( (p.x - self.min.x) / size.x, (self.max.y - p.y) / size.y ),
             Face::NegZ => ( (self.max.x - p.x) / size.x, (self.max.y - p.y) / size.y ),
         };
 
-        // Clampeamos sutilmente para evitar costuras (u/v=0 ó 1 exactos)
+        // Clampeo sutil para evitar costuras
         let tiny = 1e-6f32;
         u = u.clamp(0.0 + tiny, 1.0 - tiny);
         v = v.clamp(0.0 + tiny, 1.0 - tiny);
 
-        // Material final (textura si hay; muestreo CLAMP para seamless)
-        let final_material = if let Some(tex) = &self.face_textures[face.idx()] {
-            let tex_color = tex.sample_clamp(u, v);
-            Material { diffuse: tex_color, ..self.material }
+        // Material final
+        let final_material = if let Some(face_layer) = &self.face_textures[face.idx()] {
+            // Aplica estilo (tint y/o alpha-test)
+            match sample_with_style(&face_layer.tex, u, v, &face_layer.style) {
+                Some(tex_color) => {
+                    Material { diffuse: tex_color, ..self.material }
+                }
+                None => {
+                    // “Hueco” por alpha-test: no impacta este cubo
+                    return Intersect::empty();
+                }
+            }
         } else {
             self.material
         };

@@ -324,8 +324,19 @@ fn main() {
     let planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
     
     let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
+    let glass_tpl = CubeTemplate::with_same_texture_black_transparent(
+        crate_mat,
+        glass.clone(),
+        0.05,
+    );
 
     let leaves = Arc::new(Texture::from_file("assets/spruce_leaves/spruce_leaves.png"));
+    let leaves_tpl = CubeTemplate::with_same_texture_tinted_black_transparent(
+        crate_mat,
+        leaves.clone(),
+        Vector3::new(0.2, 0.6, 0.25),
+        0.05,
+    );
 
     let ice = Arc::new(Texture::from_file("assets/ice/ice.png"));
 
@@ -335,8 +346,8 @@ fn main() {
     palette.set('D', CubeTemplate::with_same_texture(crate_mat,  dirt_tex));
     palette.set('L', CubeTemplate::with_top_bottom_sides(crate_mat,  log_top, log_bottom, log_side));
     palette.set('P', CubeTemplate::with_same_texture(crate_mat,  planks));
-    palette.set('G', CubeTemplate::with_same_texture(crate_mat,  glass));
-    palette.set('l', CubeTemplate::with_same_texture(crate_mat,  leaves));
+    palette.set('G', glass_tpl);
+    palette.set('l', leaves_tpl);
     palette.set('H', CubeTemplate::with_same_texture(crate_mat,  ice));
 
     // ===== CARGA ESCENA ASCII SIN GAPS =====
