@@ -327,6 +327,8 @@ fn main() {
 
     let leaves = Arc::new(Texture::from_file("assets/spruce_leaves/spruce_leaves.png"));
 
+    let ice = Arc::new(Texture::from_file("assets/ice/ice.png"));
+
     let mut palette = Palette::new();
     //palette.set('G', CubeTemplate::material_only(stone));
     palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
@@ -335,6 +337,7 @@ fn main() {
     palette.set('P', CubeTemplate::with_same_texture(crate_mat,  planks));
     palette.set('G', CubeTemplate::with_same_texture(crate_mat,  glass));
     palette.set('l', CubeTemplate::with_same_texture(crate_mat,  leaves));
+    palette.set('H', CubeTemplate::with_same_texture(crate_mat,  ice));
 
     // ===== CARGA ESCENA ASCII SIN GAPS =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);

@@ -12,14 +12,14 @@
                          
                          
                          
-                    X    
-                   XXX   
-                    X    
+                    l    
+                   lLl   
+                    l    
                          
-                     XXX 
-                    XXXXX
- XXX                XXXXX
-XXXXX               XXXXX
-XXXXX                XXX 
-XXXXX                    
- XXX                    -
+                     lll 
+                    lllll
+ lll                llLll
+lllll               lllll
+llLll                lll 
+lllll                    
+ lll                    -

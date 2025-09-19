@@ -17,9 +17,9 @@
                          
                          
                          
-                      X  
-                     XXX 
-  X                   X  
- XXX                     
-  X                      
+                      l  
+                     lll 
+  l                   l  
+ lll                     
+  l                      
                         -
