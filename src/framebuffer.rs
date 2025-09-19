@@ -2,34 +2,60 @@
 
 use raylib::prelude::*;
 
+/// Framebuffer CPU con textura GPU persistente (sin recreación por frame).
 pub struct Framebuffer {
     pub width: u32,
     pub height: u32,
-    pub color_buffer: Image,
+    pixels: Vec<Color>,                               // buffer CPU: width*height
+    texture_gpu: Option<raylib::texture::Texture2D>,  // textura persistente
     background_color: Color,
     current_color: Color,
 }
 
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
-        let color_buffer = Image::gen_image_color(width as i32, height as i32, Color::BLACK);
+        let n = (width as usize) * (height as usize);
         Framebuffer {
             width,
             height,
-            color_buffer,
+            pixels: vec![Color::BLACK; n],
+            texture_gpu: None,
             background_color: Color::BLACK,
             current_color: Color::WHITE,
         }
     }
 
-    pub fn clear(&mut self) {
-        self.color_buffer = Image::gen_image_color(self.width as i32, self.height as i32, self.background_color);
+    /// Debes crear la Texture2D UNA sola vez (desde un Image temporal) y adjuntarla aquí.
+    pub fn attach_texture(&mut self, tex: raylib::texture::Texture2D) {
+        self.texture_gpu = Some(tex);
     }
 
-    pub fn set_pixel(&mut self, x: u32, y: u32) {
-        if x < self.width && y < self.height {
-            self.color_buffer.draw_pixel(x as i32, y as i32, self.current_color);
+    /// Acceso mutable al buffer para render paralelo.
+    #[inline]
+    pub fn pixels_mut(&mut self) -> &mut [Color] {
+        &mut self.pixels
+    }
+
+    /// Acceso de solo lectura, por si lo necesitas.
+    #[inline]
+    pub fn pixels(&self) -> &[Color] {
+        &self.pixels
+    }
+
+    /// Limpia el buffer CPU sin recrearlo.
+    pub fn clear(&mut self) {
+        let bg = self.background_color;
+        for px in self.pixels.iter_mut() {
+            *px = bg;
         }
+    }
+
+    /// Escritura de píxel directa (para usos puntuales).
+    #[inline]
+    pub fn set_pixel(&mut self, x: u32, y: u32) {
+        if x >= self.width || y >= self.height { return; }
+        let idx = (y as usize) * (self.width as usize) + (x as usize);
+        self.pixels[idx] = self.current_color;
     }
 
     pub fn set_background_color(&mut self, color: Color) {
@@ -40,18 +66,25 @@ impl Framebuffer {
         self.current_color = color;
     }
 
-    pub fn _render_to_file(&self, file_path: &str) {
-        self.color_buffer.export_image(file_path);
-    }
-
+    /// Sube el buffer CPU a la textura persistente y la dibuja.
     pub fn swap_buffers(
-        &self,
+        &mut self, // <- cambia a &mut self
         window: &mut RaylibHandle,
         raylib_thread: &RaylibThread,
     ) {
-        if let Ok(texture) = window.load_texture_from_image(raylib_thread, &self.color_buffer) {
-            let mut renderer = window.begin_drawing(raylib_thread);
-            renderer.draw_texture(&texture, 0, 0, Color::WHITE);
+        if let Some(tex) = &mut self.texture_gpu {
+            let byte_len = self.pixels.len() * std::mem::size_of::<Color>();
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(self.pixels.as_ptr() as *const u8, byte_len)
+            };
+
+            // Actualiza TODO el área de la textura (0,0, w, h)
+            let rect = Rectangle::new(0.0, 0.0, self.width as f32, self.height as f32);
+            tex.update_texture_rec(rect, bytes).expect("update_texture_rec failed");
+
+            let mut d = window.begin_drawing(raylib_thread);
+            d.clear_background(Color::BLACK);
+            d.draw_texture(tex, 0, 0, Color::WHITE);
         }
     }
 }

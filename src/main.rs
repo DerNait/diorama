@@ -170,31 +170,107 @@ pub fn cast_ray(
     phong_color * (1.0 - reflectivity - transparency) + reflect_color * reflectivity + refract_color * transparency
 }
 
-pub fn render(framebuffer: &mut Framebuffer, objects: &[Box<dyn RayIntersect>], accel: &UniformGridAccel, camera: &Camera, light: &Light) {
-    let width = framebuffer.width as f32;
-    let height = framebuffer.height as f32;
-    let aspect_ratio = width / height;
+pub fn render(
+    framebuffer: &mut Framebuffer,
+    objects: &[Box<dyn RayIntersect>],
+    accel: &UniformGridAccel,
+    camera: &Camera,
+    light: &Light,
+) {
+    let w = framebuffer.width as usize;
+    let h = framebuffer.height as usize;
+
+    // Snapshot de la base de cámara para lectura en hilos
+    let cam = camera.basis();
+
+    let width_f = framebuffer.width as f32;
+    let height_f = framebuffer.height as f32;
+    let aspect_ratio = width_f / height_f;
     let fov = PI / 3.0;
     let perspective_scale = (fov * 0.5).tan();
 
-    for y in 0..framebuffer.height {
-        for x in 0..framebuffer.width {
-            let screen_x = (2.0 * x as f32) / width - 1.0;
-            let screen_y = -(2.0 * y as f32) / height + 1.0;
+    // ¿Cuántos hilos usar?
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let rows_per = (h + threads - 1) / threads;
 
-            let screen_x = screen_x * aspect_ratio * perspective_scale;
-            let screen_y = screen_y * perspective_scale;
+    // Buffer final (de destino) accesible tras juntar resultados
+    let pixels = framebuffer.pixels_mut();
 
-            let ray_direction = Vector3::new(screen_x, screen_y, -1.0).normalized();
-            let rotated_direction = camera.basis_change(&ray_direction);
+    // Scoped threads: pueden tomar prestado &accel y &objects sin 'static
+    std::thread::scope(|scope| {
+        // Guardamos los join handles y cada bloque local
+        let mut joins = Vec::with_capacity(threads);
+        // Contenedor para resultados por hilo (y_start, bloque)
+        let mut results: Vec<(usize, Vec<Color>)> = Vec::with_capacity(threads);
 
-            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, accel, light, 0);
-            let pixel_color = vector3_to_color(pixel_color_v3);
+        for t in 0..threads {
+            let y_start = t * rows_per;
+            if y_start >= h { break; }
+            let y_end = ((t + 1) * rows_per).min(h);
 
-            framebuffer.set_current_color(pixel_color);
-            framebuffer.set_pixel(x, y);
+            // Capturas por copia (baratas)
+            let light_c = *light; // Light es Copy
+            let aspect_ratio_c = aspect_ratio;
+            let perspective_scale_c = perspective_scale;
+            let width_f_c = width_f;
+            let height_f_c = height_f;
+            let cam_c = cam;
+            let span_w = w;
+
+            // Reservamos un buffer local por hilo
+            // Nota: lo crearemos *dentro* del hilo para no mover ownership raro aquí.
+            let handle = scope.spawn(move || {
+                let span_h = y_end - y_start;
+                let mut local = vec![Color::BLACK; span_h * span_w];
+
+                for (row_off, y) in (y_start..y_end).enumerate() {
+                    let fy = y as f32;
+                    for x in 0..span_w {
+                        let fx = x as f32;
+
+                        let mut sx = (2.0 * fx) / width_f_c - 1.0;
+                        let mut sy = -(2.0 * fy) / height_f_c + 1.0;
+
+                        sx = sx * aspect_ratio_c * perspective_scale_c;
+                        sy = sy * perspective_scale_c;
+
+                        let v_cam = Vector3::new(sx, sy, -1.0).normalized();
+                        // base change manual evitando método sobre &self
+                        let ray_dir = Vector3::new(
+                            v_cam.x * cam_c.right.x + v_cam.y * cam_c.up.x - v_cam.z * cam_c.forward.x,
+                            v_cam.x * cam_c.right.y + v_cam.y * cam_c.up.y - v_cam.z * cam_c.forward.y,
+                            v_cam.x * cam_c.right.z + v_cam.y * cam_c.up.z - v_cam.z * cam_c.forward.z,
+                        );
+
+                        // Usamos &accel y &objects prestados del scope
+                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0);
+                        local[row_off * span_w + x] = vector3_to_color(rgb);
+                    }
+                }
+
+                (y_start, local)
+            });
+
+            joins.push(handle);
         }
-    }
+
+        // Recogemos resultados (join implícito al final del scope, pero queremos orden)
+        for j in joins {
+            let (y_start, local) = j.join().expect("Hilo de render falló");
+            results.push((y_start, local));
+        }
+
+        // Copiamos cada bloque local a su sitio en el framebuffer
+        for (y_start, local) in results {
+            let span_h = local.len() / w;
+            for row_off in 0..span_h {
+                let dst_start = (y_start + row_off) * w;
+                let src_start = row_off * w;
+                pixels[dst_start..dst_start + w]
+                    .copy_from_slice(&local[src_start..src_start + w]);
+            }
+        }
+    });
 }
 
 fn main() {
@@ -208,6 +284,12 @@ fn main() {
         .build();
 
     let mut framebuffer = Framebuffer::new(window_width as u32, window_height as u32);
+
+    let mut tmp_img = Image::gen_image_color(window_width, window_height, Color::BLACK);
+    let texture = window
+        .load_texture_from_image(&thread, &tmp_img)
+        .expect("No se pudo crear la textura persistente");
+    framebuffer.attach_texture(texture);
 
     // ======= PALETA =======
     let stone = Material::new(
