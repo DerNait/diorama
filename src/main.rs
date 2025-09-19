@@ -116,85 +116,103 @@ pub fn cast_ray(
     light: &Light,
     depth: u32,
 ) -> Vector3 {
-    if depth > 3 { return procedural_sky(*ray_direction); }
+    if depth > 3 {
+        return procedural_sky(*ray_direction);
+    }
 
-    let mut intersect = accel.trace(ray_origin, ray_direction, objects);
+    let intersect = accel.trace(ray_origin, ray_direction, objects);
 
     if !intersect.is_intersecting {
         return procedural_sky(*ray_direction);
     }
 
+    // Direcciones básicas
     let (light_dir, _light_distance) = light.at(intersect.point);
-    let view_dir  = (*ray_origin - intersect.point).normalized();
-    let reflect_dir = reflect(&-light_dir, &intersect.normal).normalized();
+    let view_dir   = (*ray_origin - intersect.point).normalized();
+    let refl_light = reflect(&-light_dir, &intersect.normal).normalized();
 
+    // Sombras (occlusion tiene en cuenta coverage para “ventanas”)
     let shadow_intensity = cast_shadow(&intersect, light, objects, accel);
-    let light_intensity = light.intensity * (1.0 - shadow_intensity);
+    let light_intensity  = light.intensity * (1.0 - shadow_intensity);
 
-    // Half-Lambert (k=0.3) + ambient 0.15
-    let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3).clamp(0.0, 1.0) * light_intensity;
-    let diffuse = intersect.material.diffuse * diffuse_intensity;
-
-    let specular_intensity = view_dir.dot(reflect_dir).max(0.0).powf(intersect.material.specular) * light_intensity;
+    // Luz de la lámpara en float
     let light_color_v3 = Vector3::new(
         light.color.r as f32 / 255.0,
         light.color.g as f32 / 255.0,
-        light.color.b as f32 / 255.0
+        light.color.b as f32 / 255.0,
     );
+
+    // Difuso (Half-Lambert k=0.3) + ambient 0.15
+    let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3)
+        .clamp(0.0, 1.0) * light_intensity;
+    let diffuse  = intersect.material.diffuse * diffuse_intensity;
+
+    // Especular Phong
+    let specular_intensity = view_dir
+        .dot(refl_light)
+        .max(0.0)
+        .powf(intersect.material.specular) * light_intensity;
     let specular = light_color_v3 * specular_intensity;
 
-    let albedo = intersect.material.albedo;
-    let phong_color = (diffuse + intersect.material.diffuse * 0.15) * albedo[0] + specular * albedo[1];
+    // === Mezcla con coverage (alpha de la textura) ===
+    let coverage = intersect.coverage;           // 0..1 (ventanas/hojas pueden ser <1)
+    let albedo   = intersect.material.albedo;
+
+    // Phong visible solo en la fracción cubierta
+    let phong_color =
+        (diffuse + intersect.material.diffuse * 0.15) * (albedo[0] * coverage) +
+        specular * (albedo[1] * coverage);
+
+    // Reflejo NO depende de coverage (ventana muy limpia sigue reflejando)
+    let reflectivity = albedo[2];
+
+    // Transparencia efectiva: zonas poco cubiertas dejan pasar más
+    let mut transparency = (1.0 - coverage) + albedo[3] * coverage;
+    transparency = transparency.clamp(0.0, 1.0);
 
     // Reflections
-    let reflectivity = intersect.material.albedo[2];
     let reflect_color = if reflectivity > 0.0 {
-        let reflect_dir = reflect(ray_direction, &intersect.normal).normalized();
-        let reflect_origin = offset_origin(&intersect, &reflect_dir);
-        cast_ray(&reflect_origin, &reflect_dir, objects, accel, light, depth + 1)
-    } else { Vector3::zero() };
+        let rdir = reflect(ray_direction, &intersect.normal).normalized();
+        let ro   = offset_origin(&intersect, &rdir);
+        cast_ray(&ro, &rdir, objects, accel, light, depth + 1)
+    } else {
+        Vector3::zero()
+    };
 
     // Refractions
-    let transparency = intersect.material.albedo[3];
     let refract_color = if transparency > 0.0 {
-        if let Some(refract_dir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
-            let refract_origin = offset_origin(&intersect, &refract_dir);
-            cast_ray(&refract_origin, &refract_dir, objects, accel, light, depth + 1)
+        if let Some(tdir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
+            let ro = offset_origin(&intersect, &tdir);
+            cast_ray(&ro, &tdir, objects, accel, light, depth + 1)
         } else {
-            let reflect_dir = reflect(ray_direction, &intersect.normal).normalized();
-            let reflect_origin = offset_origin(&intersect, &reflect_dir);
-            cast_ray(&reflect_origin, &reflect_dir, objects, accel, light, depth + 1)
+            // TIR → refleja
+            let rdir = reflect(ray_direction, &intersect.normal).normalized();
+            let ro   = offset_origin(&intersect, &rdir);
+            cast_ray(&ro, &rdir, objects, accel, light, depth + 1)
         }
-    } else { Vector3::zero() };
+    } else {
+        Vector3::zero()
+    };
 
-    // ===== NUEVO: “visible-light glint” (puntito blanco en superficies reflectivas) =====
+    // === “Visible-light glint”: puntito de la luz en superficies reflectivas ===
     let mut glint = Vector3::zero();
-    let mirror_dir = reflect(ray_direction, &intersect.normal).normalized();   // dirección de espejo (vista->reflejo)
+    let mirror_dir    = reflect(ray_direction, &intersect.normal).normalized();
     let mirror_origin = offset_origin(&intersect, &mirror_dir);
 
-    // usa el color de la luz ya convertido arriba:
-    let light_color_v3 = Vector3::new(
-        light.color.r as f32 / 255.0,
-        light.color.g as f32 / 255.0,
-        light.color.b as f32 / 255.0
-    );
-
-    // Ajustes del tamaño/intensidad del puntito:
-    let hardness_point = 800.0;     // mayor = punto más pequeño (point light)
-    let hardness_dir   = 800.0;     // mayor = punto más pequeño (directional)
-    let gain           = 1.0;       // multiplicador general
-    let refl_bias      = (reflectivity + 0.05).min(1.0); // que aparezca sobre materiales más “espejados”
+    // Ajustes
+    let hardness_point = 800.0; // mayor = punto más pequeño (puntual)
+    let hardness_dir   = 800.0; // mayor = punto más pequeño (direccional)
+    let gain           = 1.0;
+    let refl_bias      = (reflectivity + 0.05).min(1.0); // para que aparezca con poco reflejo
 
     match light.kind {
         LightKind::Point => {
-            let to_l   = light.position - mirror_origin;
-            let dist   = to_l.length();
+            let to_l = light.position - mirror_origin;
+            let dist = to_l.length();
             if dist > 0.0 {
-                let ldir = to_l / dist;
-                // ¿el rayo espejo apunta (casi) a la luz?
+                let ldir  = to_l / dist;
                 let align = mirror_dir.dot(ldir).max(0.0);
                 if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, dist, objects) {
-                    // caída suave con distancia y mancha ultrapequeña por potencia
                     let falloff = 1.0 / (1.0 + dist * dist);
                     let s = gain * light.intensity * falloff * align.powf(hardness_point) * refl_bias;
                     glint = light_color_v3 * s;
@@ -202,8 +220,8 @@ pub fn cast_ray(
             }
         }
         LightKind::Directional => {
-            let ldir   = -light.direction; // llega “del infinito”
-            let align  = mirror_dir.dot(ldir).max(0.0);
+            let ldir  = -light.direction;
+            let align = mirror_dir.dot(ldir).max(0.0);
             if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, f32::INFINITY, objects) {
                 let s = gain * light.intensity * align.powf(hardness_dir) * refl_bias;
                 glint = light_color_v3 * s;
@@ -211,11 +229,9 @@ pub fn cast_ray(
         }
     }
 
-    // Color final con glint añadido
-    phong_color * (1.0 - reflectivity - transparency)
-        + reflect_color * reflectivity
-        + refract_color * transparency
-        + glint
+    // Combinación final
+    let k_phong = (1.0 - reflectivity - transparency).max(0.0);
+    phong_color * k_phong + reflect_color * reflectivity + refract_color * transparency + glint
 }
 
 pub fn render(
@@ -377,9 +393,9 @@ fn main() {
 
     let glass_mat = Material::new(
         Vector3::new(1.0, 1.0, 1.0),
-        120.0,                 // highlight duro
-        [0.80, 0.15, 0.05, 0.0], // difuso bajo, especular visible, 5% reflejo, 80% transmisión
-        1.50,                  // IOR del vidrio
+        120.0,
+        [0.80, 0.15, 0.06, 0.0],
+        1.5,
     );
 
     let leaves_mat = Material::new(
@@ -409,7 +425,7 @@ fn main() {
     let planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
     
     let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
-    let glass_tpl = CubeTemplate::with_same_texture_black_transparent(
+    let glass_tpl = CubeTemplate::with_same_texture_image_alpha_window(
         glass_mat,
         glass.clone(),
         0.05,

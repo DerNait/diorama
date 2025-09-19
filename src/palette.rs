@@ -8,16 +8,24 @@ use crate::material::Material;
 use crate::texture::Texture;
 
 /// Estilo de muestreo por cara.
-/// - Normal: usa el color de la textura tal cual.
-/// - GrayscaleTint: asume textura B/N; multiplica una tinta por la luminancia.
-/// - BlackIsTransparent: alpha-test por luminancia (si <= umbral, se considera hueco).
-/// - GrayscaleTintBlackTransparent: combina ambas (tinta por luminancia y descarta por umbral).
+/// - Normal: usa el color de la textura.
+/// - GrayscaleTint: asume B/N; tinta por luminancia.
+/// - BlackIsTransparent: cutout por luminancia (<= umbral → hueco).
+/// - GrayscaleTintBlackTransparent: tinta + cutout por luminancia.
+/// - ImageAlphaCutout: cutout por canal alpha del PNG (<= umbral → hueco).
+/// - GrayscaleTintImageAlphaCutout: tinta + cutout por alpha.
+/// - ImageAlphaWindow: usa alpha como **coverage** (0..1), NO corta el rayo; ideal ventana.
+/// - GrayscaleTintImageAlphaWindow: igual que arriba con tinta para B/N.
 #[derive(Clone)]
 pub enum TexStyle {
     Normal,
     GrayscaleTint { color: Vector3 },
-    BlackIsTransparent { threshold: f32 }, // p.ej. 0.05
+    BlackIsTransparent { threshold: f32 },
     GrayscaleTintBlackTransparent { color: Vector3, threshold: f32 },
+    ImageAlphaCutout { threshold: f32 },
+    GrayscaleTintImageAlphaCutout { color: Vector3, threshold: f32 },
+    ImageAlphaWindow { threshold: f32 },
+    GrayscaleTintImageAlphaWindow { color: Vector3, threshold: f32 },
 }
 
 /// Capa de cara: textura + estilo de muestreo.
@@ -29,8 +37,6 @@ pub struct FaceStyle {
 
 /// Orden de caras (importante):
 /// [PosX, NegX, PosY, NegY, PosZ, NegZ]
-///  - PosY = tapa (arriba), NegY = base.
-///  - PosZ = frente, NegZ = fondo.
 #[derive(Clone)]
 pub struct CubeTemplate {
     pub material: Material,
@@ -38,7 +44,6 @@ pub struct CubeTemplate {
 }
 
 impl CubeTemplate {
-    /// Solo material (sin texturas)
     pub fn material_only(material: Material) -> Self {
         CubeTemplate {
             material,
@@ -46,7 +51,6 @@ impl CubeTemplate {
         }
     }
 
-    /// Misma textura en las 6 caras (estilo NORMAL por defecto)
     pub fn with_same_texture(material: Material, tex: Arc<Texture>) -> Self {
         let fs = FaceStyle { tex: tex.clone(), style: TexStyle::Normal };
         CubeTemplate {
@@ -56,7 +60,6 @@ impl CubeTemplate {
         }
     }
 
-    /// Misma textura en las 6 caras, pero usando TINTA para B/N.
     pub fn with_same_texture_tinted(material: Material, tex: Arc<Texture>, color: Vector3) -> Self {
         let fs = FaceStyle { tex: tex.clone(), style: TexStyle::GrayscaleTint { color } };
         CubeTemplate {
@@ -66,11 +69,8 @@ impl CubeTemplate {
         }
     }
 
-    /// Misma textura con “negro es transparente” (alpha-test por umbral).
     pub fn with_same_texture_black_transparent(
-        material: Material,
-        tex: Arc<Texture>,
-        threshold: f32,
+        material: Material, tex: Arc<Texture>, threshold: f32,
     ) -> Self {
         let fs = FaceStyle { tex: tex.clone(), style: TexStyle::BlackIsTransparent { threshold } };
         CubeTemplate {
@@ -80,12 +80,8 @@ impl CubeTemplate {
         }
     }
 
-    /// Misma textura B/N tintada **y** con “negro transparente”.
     pub fn with_same_texture_tinted_black_transparent(
-        material: Material,
-        tex: Arc<Texture>,
-        color: Vector3,
-        threshold: f32,
+        material: Material, tex: Arc<Texture>, color: Vector3, threshold: f32,
     ) -> Self {
         let fs = FaceStyle {
             tex: tex.clone(),
@@ -98,7 +94,60 @@ impl CubeTemplate {
         }
     }
 
-    /// Top / Bottom / Sides (lados iguales), útil para terreno tipo Minecraft (NORMAL).
+    /// Cutout por alpha de imagen (zonas transparentes desaparecen).
+    pub fn with_same_texture_image_alpha(
+        material: Material, tex: Arc<Texture>, threshold: f32,
+    ) -> Self {
+        let fs = FaceStyle { tex: tex.clone(), style: TexStyle::ImageAlphaCutout { threshold } };
+        CubeTemplate {
+            face_textures: [Some(fs.clone()), Some(fs.clone()), Some(fs.clone()),
+                            Some(fs.clone()), Some(fs.clone()), Some(fs)],
+            material,
+        }
+    }
+
+    /// Tinta + cutout por alpha de imagen.
+    pub fn with_same_texture_tinted_image_alpha(
+        material: Material, tex: Arc<Texture>, color: Vector3, threshold: f32,
+    ) -> Self {
+        let fs = FaceStyle {
+            tex: tex.clone(),
+            style: TexStyle::GrayscaleTintImageAlphaCutout { color, threshold },
+        };
+        CubeTemplate {
+            face_textures: [Some(fs.clone()), Some(fs.clone()), Some(fs.clone()),
+                            Some(fs.clone()), Some(fs.clone()), Some(fs)],
+            material,
+        }
+    }
+
+    /// Ventana: usa alpha como coverage (0..1), NO corta el rayo (sigue reflejando).
+    pub fn with_same_texture_image_alpha_window(
+        material: Material, tex: Arc<Texture>, threshold: f32,
+    ) -> Self {
+        let fs = FaceStyle { tex: tex.clone(), style: TexStyle::ImageAlphaWindow { threshold } };
+        CubeTemplate {
+            face_textures: [Some(fs.clone()), Some(fs.clone()), Some(fs.clone()),
+                            Some(fs.clone()), Some(fs.clone()), Some(fs)],
+            material,
+        }
+    }
+
+    /// Ventana tintada (B/N) + coverage por alpha.
+    pub fn with_same_texture_tinted_image_alpha_window(
+        material: Material, tex: Arc<Texture>, color: Vector3, threshold: f32,
+    ) -> Self {
+        let fs = FaceStyle {
+            tex: tex.clone(),
+            style: TexStyle::GrayscaleTintImageAlphaWindow { color, threshold },
+        };
+        CubeTemplate {
+            face_textures: [Some(fs.clone()), Some(fs.clone()), Some(fs.clone()),
+                            Some(fs.clone()), Some(fs.clone()), Some(fs)],
+            material,
+        }
+    }
+
     pub fn with_top_bottom_sides(
         material: Material,
         top: Arc<Texture>,
@@ -107,18 +156,17 @@ impl CubeTemplate {
     ) -> Self {
         CubeTemplate {
             face_textures: [
-                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }), // PosX
-                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }), // NegX
-                Some(FaceStyle { tex: top.clone(),    style: TexStyle::Normal }), // PosY
-                Some(FaceStyle { tex: bottom.clone(), style: TexStyle::Normal }), // NegY
-                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }), // PosZ
-                Some(FaceStyle { tex: side,           style: TexStyle::Normal }), // NegZ
+                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }),
+                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }),
+                Some(FaceStyle { tex: top.clone(),    style: TexStyle::Normal }),
+                Some(FaceStyle { tex: bottom.clone(), style: TexStyle::Normal }),
+                Some(FaceStyle { tex: side.clone(),   style: TexStyle::Normal }),
+                Some(FaceStyle { tex: side,           style: TexStyle::Normal }),
             ],
             material,
         }
     }
 
-    /// Variante tintada para B/N (top/bottom/sides).
     pub fn with_top_bottom_sides_tinted(
         material: Material,
         top: Arc<Texture>, top_color: Vector3,
@@ -138,7 +186,6 @@ impl CubeTemplate {
         }
     }
 
-    /// 6 caras explícitas con estilos (usa `None` para “sin textura” en una cara).
     pub fn with_faces_styled(
         material: Material,
         faces: [Option<(Arc<Texture>, TexStyle)>; 6],

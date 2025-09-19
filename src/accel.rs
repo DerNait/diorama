@@ -48,7 +48,7 @@ pub struct UniformGridAccel {
 
 impl UniformGridAccel {
     pub fn build(objects: &[Box<dyn RayIntersect>], desired_cell_size: f32) -> Self {
-        // 1) Bounds globales
+        // ... (sin cambios)
         let mut bounds = Aabb {
             min: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
             max: Vector3::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY),
@@ -64,7 +64,6 @@ impl UniformGridAccel {
         bounds.min = bounds.min - Vector3::new(pad, pad, pad);
         bounds.max = bounds.max + Vector3::new(pad, pad, pad);
 
-        // 2) Dims
         let ext = bounds.max - bounds.min;
         let mut nx = (ext.x / desired_cell_size).ceil() as i32;
         let mut ny = (ext.y / desired_cell_size).ceil() as i32;
@@ -76,7 +75,6 @@ impl UniformGridAccel {
         let total = (nx as usize) * (ny as usize) * (nz as usize);
         let mut cells: Vec<Vec<usize>> = (0..total).map(|_| Vec::new()).collect();
 
-        // 3) Insertar cada objeto en las celdas que toca
         for (i, a) in aabbs.iter().enumerate() {
             let min_ix = ((a.min.x - bounds.min.x) / cell_size.x).floor() as i32;
             let min_iy = ((a.min.y - bounds.min.y) / cell_size.y).floor() as i32;
@@ -102,8 +100,8 @@ impl UniformGridAccel {
         ((iz * self.dims[1] + iy) * self.dims[0] + ix) as usize
     }
 
-    /// DDA estilo Amanatides & Woo: tMax son **tiempos absolutos**, tDelta es el incremento por celda.
     pub fn trace(&self, ro: &Vector3, rd: &Vector3, objects: &[Box<dyn RayIntersect>]) -> Intersect {
+        // ... (sin cambios)
         let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
             Some(t) => t, None => return Intersect::empty(),
         };
@@ -113,7 +111,6 @@ impl UniformGridAccel {
         let eps = 1e-4;
         let pos = *ro + *rd * t_enter;
 
-        // celda inicial
         let mut ix = ((pos.x - self.bounds.min.x) / self.cell_size.x).floor() as i32;
         let mut iy = ((pos.y - self.bounds.min.y) / self.cell_size.y).floor() as i32;
         let mut iz = ((pos.z - self.bounds.min.z) / self.cell_size.z).floor() as i32;
@@ -121,7 +118,6 @@ impl UniformGridAccel {
         iy = iy.clamp(0, self.dims[1]-1);
         iz = iz.clamp(0, self.dims[2]-1);
 
-        // pasos y tiempos a la siguiente pared (absolutos)
         let step_x = if rd.x > 0.0 { 1 } else if rd.x < 0.0 { -1 } else { 0 };
         let step_y = if rd.y > 0.0 { 1 } else if rd.y < 0.0 { -1 } else { 0 };
         let step_z = if rd.z > 0.0 { 1 } else if rd.z < 0.0 { -1 } else { 0 };
@@ -142,7 +138,6 @@ impl UniformGridAccel {
         let mut best_t = f32::INFINITY;
 
         loop {
-            // probar objetos en la celda
             let cell_idx = self.cell_index(ix, iy, iz);
             for &obj_idx in &self.cells[cell_idx] {
                 let i = objects[obj_idx].ray_intersect(ro, rd);
@@ -152,11 +147,9 @@ impl UniformGridAccel {
                 }
             }
 
-            // Si el hit ocurre antes de salir de la celda actual, listo
             let t_cell_exit = t_max_x.min(t_max_y).min(t_max_z);
             if best_t <= t_cell_exit { break; }
 
-            // Avanzar a la siguiente celda en el eje con menor tMax
             if t_max_x < t_max_y {
                 if t_max_x < t_max_z {
                     ix += step_x; if ix < 0 || ix >= self.dims[0] { break; }
@@ -180,7 +173,7 @@ impl UniformGridAccel {
         best
     }
 
-    /// Sombra: true si hay intersección antes de `max_t`
+    /// Sombra: true si hay intersección **opaca** antes de `max_t`
     pub fn occluded(&self, ro: &Vector3, rd: &Vector3, max_t: f32, objects: &[Box<dyn RayIntersect>]) -> bool {
         let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
             Some(t) => t, None => return false,
@@ -213,12 +206,20 @@ impl UniformGridAccel {
         let t_delta_y = if step_y != 0 { self.cell_size.y / rd.y.abs() } else { f32::INFINITY };
         let t_delta_z = if step_z != 0 { self.cell_size.z / rd.z.abs() } else { f32::INFINITY };
 
+        // Umbral de cobertura para bloquear luz (ventanas no bloquean)
+        let occ_cutoff = 0.5;
+
         loop {
             let cell_idx = self.cell_index(ix, iy, iz);
             for &obj_idx in &self.cells[cell_idx] {
                 let i = objects[obj_idx].ray_intersect(ro, rd);
                 if i.is_intersecting && i.distance > eps && i.distance < max_t {
-                    return true;
+                    if i.coverage >= occ_cutoff {
+                        return true; // bloquea la luz
+                    } else {
+                        // superficie tipo “ventana”: deja pasar
+                        // seguimos buscando posibles bloqueadores detrás
+                    }
                 }
             }
 
