@@ -58,8 +58,9 @@ pub fn load_ascii_layers_with_palette(
         let step_x = params.cube_size.x + params.gap.x;
         let step_z = params.cube_size.z + params.gap.z;
 
-        let half_w = (cols as f32 - 1.0) * 0.5;
-        let half_h = (rows as f32 - 1.0) * 0.5;
+        // Índice base ENTERO para alinear con la grilla del builder (centros en i+0.5)
+        let base_ix: i32 = -((cols as i32) / 2);
+        let base_iz: i32 = -((rows as i32) / 2);
 
         let y_center = params.y0 + layer_idx as f32 * params.y_step;
 
@@ -70,7 +71,7 @@ pub fn load_ascii_layers_with_palette(
             for c in 0..cols {
                 let ch = chars[c];
 
-                // sólido si está en paleta o según flags
+                // sólido...
                 let has_tpl = palette.get(ch).is_some();
                 let is_slab = ch == '_' || ch == '-';
                 let solid = if params.any_non_whitespace_is_solid {
@@ -80,22 +81,23 @@ pub fn load_ascii_layers_with_palette(
                 };
                 if !solid { continue; }
 
-                let x = (c as f32 - half_w) * step_x;
-                let z = (r as f32 - half_h) * step_z;
-                let center = params.origin + Vector3::new(x, y_center, z);
+                // ✅ usa índices de celda enteros y centros (i + 0.5) * step
+                let ix = base_ix + c as i32;
+                let iz = base_iz + r as i32;
+
+                let x = params.origin.x + (ix as f32 + 0.5) * step_x;
+                let z = params.origin.z + (iz as f32 + 0.5) * step_z;
+                let center = Vector3::new(x, y_center, z);
 
                 if is_slab {
-                    // Crear SLAB (mitad baja '_' o mitad alta '-')
                     let half = if ch == '_' { SlabHalf::Bottom } else { SlabHalf::Top };
                     let mut slab = Slab::from_block_center_size(center, params.cube_size, half, default_material);
-
                     if let Some(tpl) = palette.get(ch) {
                         slab.material = tpl.material;
                         slab.set_face_textures_from_template(&tpl.face_textures);
                     }
                     objects.push(Box::new(slab));
                 } else {
-                    // Cubo estándar
                     let mut cube = Cube::from_center_size(center, params.cube_size, default_material);
                     if let Some(tpl) = palette.get(ch) {
                         cube.material = tpl.material;

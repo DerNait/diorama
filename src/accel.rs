@@ -48,7 +48,21 @@ pub struct UniformGridAccel {
 
 impl UniformGridAccel {
     pub fn build(objects: &[Box<dyn RayIntersect>], desired_cell_size: f32) -> Self {
-        // ... (sin cambios)
+        // === Caso escena vacía: crea grilla 1x1x1 segura ===
+        if objects.is_empty() {
+            let bounds = Aabb {
+                min: Vector3::new(-0.5, -0.5, -0.5),
+                max: Vector3::new( 0.5,  0.5,  0.5),
+            };
+            return UniformGridAccel {
+                bounds,
+                dims: [1, 1, 1],
+                cell_size: bounds.max - bounds.min,
+                cells: vec![Vec::new()], // una celda vacía
+            };
+        }
+
+        // ==== Normal (con objetos) ====
         let mut bounds = Aabb {
             min: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
             max: Vector3::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY),
@@ -60,19 +74,32 @@ impl UniformGridAccel {
             aabbs.push(a);
             bounds = Aabb::union(bounds, a);
         }
+        if !bounds.min.x.is_finite() || !bounds.max.x.is_finite() {
+            bounds = Aabb { min: Vector3::new(-0.5,-0.5,-0.5), max: Vector3::new(0.5,0.5,0.5) };
+        }
+
         let pad = 1e-4;
         bounds.min = bounds.min - Vector3::new(pad, pad, pad);
         bounds.max = bounds.max + Vector3::new(pad, pad, pad);
 
         let ext = bounds.max - bounds.min;
-        let mut nx = (ext.x / desired_cell_size).ceil() as i32;
-        let mut ny = (ext.y / desired_cell_size).ceil() as i32;
-        let mut nz = (ext.z / desired_cell_size).ceil() as i32;
+        let ext = Vector3::new(
+            if ext.x.is_finite() { ext.x.max(1e-6) } else { 1.0 },
+            if ext.y.is_finite() { ext.y.max(1e-6) } else { 1.0 },
+            if ext.z.is_finite() { ext.z.max(1e-6) } else { 1.0 },
+        );
+
+        let mut nx = (ext.x / desired_cell_size.max(1e-6)).ceil() as i32;
+        let mut ny = (ext.y / desired_cell_size.max(1e-6)).ceil() as i32;
+        let mut nz = (ext.z / desired_cell_size.max(1e-6)).ceil() as i32;
         nx = nx.max(1); ny = ny.max(1); nz = nz.max(1);
 
         let dims = [nx, ny, nz];
         let cell_size = Vector3::new(ext.x / nx as f32, ext.y / ny as f32, ext.z / nz as f32);
-        let total = (nx as usize) * (ny as usize) * (nz as usize);
+
+        let total_u = (nx as i64) * (ny as i64) * (nz as i64);
+        let total = if total_u <= 0 { 1 } else { total_u.min(1_000_000) as usize };
+
         let mut cells: Vec<Vec<usize>> = (0..total).map(|_| Vec::new()).collect();
 
         for (i, a) in aabbs.iter().enumerate() {
@@ -83,11 +110,15 @@ impl UniformGridAccel {
             let max_iy = ((a.max.y - bounds.min.y) / cell_size.y).floor() as i32;
             let max_iz = ((a.max.z - bounds.min.z) / cell_size.z).floor() as i32;
 
-            for iz in min_iz.max(0)..=max_iz.min(nz - 1) {
-                for iy in min_iy.max(0)..=max_iy.min(ny - 1) {
-                    for ix in min_ix.max(0)..=max_ix.min(nx - 1) {
-                        let idx = ((iz * ny + iy) * nx + ix) as usize;
-                        cells[idx].push(i);
+            for iz in min_iz.max(0)..=max_iz.min(dims[2] - 1) {
+                for iy in min_iy.max(0)..=max_iy.min(dims[1] - 1) {
+                    for ix in min_ix.max(0)..=max_ix.min(dims[0] - 1) {
+                        let idx64 = ((iz as i64 * dims[1] as i64 + iy as i64) * dims[0] as i64 + ix as i64);
+                        if idx64 < 0 { continue; }
+                        let idx = idx64 as usize;
+                        if idx < cells.len() {
+                            cells[idx].push(i);
+                        }
                     }
                 }
             }
@@ -101,7 +132,8 @@ impl UniformGridAccel {
     }
 
     pub fn trace(&self, ro: &Vector3, rd: &Vector3, objects: &[Box<dyn RayIntersect>]) -> Intersect {
-        // ... (sin cambios)
+        if self.cells.is_empty() { return Intersect::empty(); }
+
         let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
             Some(t) => t, None => return Intersect::empty(),
         };
@@ -138,9 +170,16 @@ impl UniformGridAccel {
         let mut best_t = f32::INFINITY;
 
         loop {
+            if ix < 0 || ix >= self.dims[0] || iy < 0 || iy >= self.dims[1] || iz < 0 || iz >= self.dims[2] {
+                break;
+            }
+
             let cell_idx = self.cell_index(ix, iy, iz);
+            if cell_idx >= self.cells.len() { break; }
+
             for &obj_idx in &self.cells[cell_idx] {
-                let i = objects[obj_idx].ray_intersect(ro, rd);
+                let mut i = objects[obj_idx].ray_intersect(ro, rd);
+                i.object_index = Some(obj_idx); // ← marca qué objeto golpeaste
                 if i.is_intersecting && i.distance >= t_enter - eps && i.distance < best_t {
                     best_t = i.distance;
                     best = i;
@@ -173,8 +212,9 @@ impl UniformGridAccel {
         best
     }
 
-    /// Sombra: true si hay intersección **opaca** antes de `max_t`
     pub fn occluded(&self, ro: &Vector3, rd: &Vector3, max_t: f32, objects: &[Box<dyn RayIntersect>]) -> bool {
+        if self.cells.is_empty() { return false; }
+
         let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
             Some(t) => t, None => return false,
         };
@@ -206,19 +246,21 @@ impl UniformGridAccel {
         let t_delta_y = if step_y != 0 { self.cell_size.y / rd.y.abs() } else { f32::INFINITY };
         let t_delta_z = if step_z != 0 { self.cell_size.z / rd.z.abs() } else { f32::INFINITY };
 
-        // Umbral de cobertura para bloquear luz (ventanas no bloquean)
         let occ_cutoff = 0.5;
 
         loop {
+            if ix < 0 || ix >= self.dims[0] || iy < 0 || iy >= self.dims[1] || iz < 0 || iz >= self.dims[2] {
+                break;
+            }
+
             let cell_idx = self.cell_index(ix, iy, iz);
+            if cell_idx >= self.cells.len() { break; }
+
             for &obj_idx in &self.cells[cell_idx] {
                 let i = objects[obj_idx].ray_intersect(ro, rd);
                 if i.is_intersecting && i.distance > eps && i.distance < max_t {
                     if i.coverage >= occ_cutoff {
-                        return true; // bloquea la luz
-                    } else {
-                        // superficie tipo “ventana”: deja pasar
-                        // seguimos buscando posibles bloqueadores detrás
+                        return true;
                     }
                 }
             }
@@ -242,6 +284,156 @@ impl UniformGridAccel {
                     iz += step_z; if iz < 0 || iz >= self.dims[2] { break; }
                     t_enter = t_max_z; t_max_z += t_delta_z;
                 }
+            }
+            if t_enter > t_exit { break; }
+        }
+        false
+    }
+
+    // Las versiones *excluding* por si te sirven más adelante:
+    pub fn trace_excluding(
+        &self,
+        ro: &Vector3,
+        rd: &Vector3,
+        objects: &[Box<dyn RayIntersect>],
+        exclude: Option<usize>,
+    ) -> Intersect {
+        if self.cells.is_empty() { return Intersect::empty(); }
+
+        let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
+            Some(t) => t, None => return Intersect::empty(),
+        };
+        if t_exit < 0.0 { return Intersect::empty(); }
+        if t_enter < 0.0 { t_enter = 0.0; }
+
+        let eps = 1e-4;
+        let pos = *ro + *rd * t_enter;
+
+        let mut ix = ((pos.x - self.bounds.min.x) / self.cell_size.x).floor() as i32;
+        let mut iy = ((pos.y - self.bounds.min.y) / self.cell_size.y).floor() as i32;
+        let mut iz = ((pos.z - self.bounds.min.z) / self.cell_size.z).floor() as i32;
+        ix = ix.clamp(0, self.dims[0]-1);
+        iy = iy.clamp(0, self.dims[1]-1);
+        iz = iz.clamp(0, self.dims[2]-1);
+
+        let step_x = if rd.x > 0.0 { 1 } else if rd.x < 0.0 { -1 } else { 0 };
+        let step_y = if rd.y > 0.0 { 1 } else if rd.y < 0.0 { -1 } else { 0 };
+        let step_z = if rd.z > 0.0 { 1 } else if rd.z < 0.0 { -1 } else { 0 };
+
+        let next_x = self.bounds.min.x + (ix + (step_x > 0) as i32) as f32 * self.cell_size.x;
+        let next_y = self.bounds.min.y + (iy + (step_y > 0) as i32) as f32 * self.cell_size.y;
+        let next_z = self.bounds.min.z + (iz + (step_z > 0) as i32) as f32 * self.cell_size.z;
+
+        let mut t_max_x = if step_x != 0 { t_enter + (next_x - pos.x) / rd.x } else { f32::INFINITY };
+        let mut t_max_y = if step_y != 0 { t_enter + (next_y - pos.y) / rd.y } else { f32::INFINITY };
+        let mut t_max_z = if step_z != 0 { t_enter + (next_z - pos.z) / rd.z } else { f32::INFINITY };
+
+        let t_delta_x = if step_x != 0 { self.cell_size.x / rd.x.abs() } else { f32::INFINITY };
+        let t_delta_y = if step_y != 0 { self.cell_size.y / rd.y.abs() } else { f32::INFINITY };
+        let t_delta_z = if step_z != 0 { self.cell_size.z / rd.z.abs() } else { f32::INFINITY };
+
+        let mut best = Intersect::empty();
+        let mut best_t = f32::INFINITY;
+
+        loop {
+            if ix < 0 || ix >= self.dims[0] || iy < 0 || iy >= self.dims[1] || iz < 0 || iz >= self.dims[2] {
+                break;
+            }
+            let cell_idx = self.cell_index(ix, iy, iz);
+            if cell_idx >= self.cells.len() { break; }
+
+            for &obj_idx in &self.cells[cell_idx] {
+                if Some(obj_idx) == exclude { continue; }
+                let mut i = objects[obj_idx].ray_intersect(ro, rd);
+                i.object_index = Some(obj_idx); // ← también aquí
+                if i.is_intersecting && i.distance >= t_enter - 1e-4 && i.distance < best_t {
+                    best_t = i.distance;
+                    best = i;
+                }
+            }
+
+            let t_cell_exit = t_max_x.min(t_max_y).min(t_max_z);
+            if best_t <= t_cell_exit { break; }
+
+            if t_max_x < t_max_y {
+                if t_max_x < t_max_z { ix += step_x; if ix < 0 || ix >= self.dims[0] { break; } t_enter = t_max_x; t_max_x += t_delta_x; }
+                else { iz += step_z; if iz < 0 || iz >= self.dims[2] { break; } t_enter = t_max_z; t_max_z += t_delta_z; }
+            } else {
+                if t_max_y < t_max_z { iy += step_y; if iy < 0 || iy >= self.dims[1] { break; } t_enter = t_max_y; t_max_y += t_delta_y; }
+                else { iz += step_z; if iz < 0 || iz >= self.dims[2] { break; } t_enter = t_max_z; t_max_z += t_delta_z; }
+            }
+            if t_enter > t_exit { break; }
+        }
+
+        best
+    }
+
+    pub fn occluded_excluding(
+        &self,
+        ro: &Vector3,
+        rd: &Vector3,
+        max_t: f32,
+        objects: &[Box<dyn RayIntersect>],
+        exclude: Option<usize>,
+    ) -> bool {
+        if self.cells.is_empty() { return false; }
+        let (mut t_enter, t_exit) = match self.bounds.intersect_ray(*ro, *rd) {
+            Some(t) => t, None => return false,
+        };
+        if t_exit < 0.0 { return false; }
+        if t_enter < 0.0 { t_enter = 0.0; }
+        let eps = 1e-4;
+        let pos = *ro + *rd * t_enter;
+
+        let mut ix = ((pos.x - self.bounds.min.x) / self.cell_size.x).floor() as i32;
+        let mut iy = ((pos.y - self.bounds.min.y) / self.cell_size.y).floor() as i32;
+        let mut iz = ((pos.z - self.bounds.min.z) / self.cell_size.z).floor() as i32;
+        ix = ix.clamp(0, self.dims[0]-1);
+        iy = iy.clamp(0, self.dims[1]-1);
+        iz = iz.clamp(0, self.dims[2]-1);
+
+        let step_x = if rd.x > 0.0 { 1 } else if rd.x < 0.0 { -1 } else { 0 };
+        let step_y = if rd.y > 0.0 { 1 } else if rd.y < 0.0 { -1 } else { 0 };
+        let step_z = if rd.z > 0.0 { 1 } else if rd.z < 0.0 { -1 } else { 0 };
+
+        let next_x = self.bounds.min.x + (ix + (step_x > 0) as i32) as f32 * self.cell_size.x;
+        let next_y = self.bounds.min.y + (iy + (step_y > 0) as i32) as f32 * self.cell_size.y;
+        let next_z = self.bounds.min.z + (iz + (step_z > 0) as i32) as f32 * self.cell_size.z;
+
+        let mut t_max_x = if step_x != 0 { t_enter + (next_x - pos.x) / rd.x } else { f32::INFINITY };
+        let mut t_max_y = if step_y != 0 { t_enter + (next_y - pos.y) / rd.y } else { f32::INFINITY };
+        let mut t_max_z = if step_z != 0 { t_enter + (next_z - pos.z) / rd.z } else { f32::INFINITY };
+
+        let t_delta_x = if step_x != 0 { self.cell_size.x / rd.x.abs() } else { f32::INFINITY };
+        let t_delta_y = if step_y != 0 { self.cell_size.y / rd.y.abs() } else { f32::INFINITY };
+        let t_delta_z = if step_z != 0 { self.cell_size.z / rd.z.abs() } else { f32::INFINITY };
+
+        let occ_cutoff = 0.5;
+
+        loop {
+            if ix < 0 || ix >= self.dims[0] || iy < 0 || iy >= self.dims[1] || iz < 0 || iz >= self.dims[2] {
+                break;
+            }
+            let cell_idx = self.cell_index(ix, iy, iz);
+            if cell_idx >= self.cells.len() { break; }
+
+            for &obj_idx in &self.cells[cell_idx] {
+                if Some(obj_idx) == exclude { continue; }
+                let i = objects[obj_idx].ray_intersect(ro, rd);
+                if i.is_intersecting && i.distance > eps && i.distance < max_t {
+                    if i.coverage >= occ_cutoff { return true; }
+                }
+            }
+
+            let t_cell_exit = t_max_x.min(t_max_y).min(t_max_z);
+            if t_cell_exit >= max_t { break; }
+
+            if t_max_x < t_max_y {
+                if t_max_x < t_max_z { ix += step_x; if ix < 0 || ix >= self.dims[0] { break; } t_enter = t_max_x; t_max_x += t_delta_x; }
+                else { iz += step_z; if iz < 0 || iz >= self.dims[2] { break; } t_enter = t_max_z; t_max_z += t_delta_z; }
+            } else {
+                if t_max_y < t_max_z { iy += step_y; if iy < 0 || iy >= self.dims[1] { break; } t_enter = t_max_y; t_max_y += t_delta_y; }
+                else { iz += step_z; if iz < 0 || iz >= self.dims[2] { break; } t_enter = t_max_z; t_max_z += t_delta_z; }
             }
             if t_enter > t_exit { break; }
         }

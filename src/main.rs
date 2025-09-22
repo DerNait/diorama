@@ -1,6 +1,5 @@
 use raylib::prelude::*;
 use std::f32::consts::PI;
-use std::sync::Arc;
 
 mod framebuffer;
 mod ray_intersect;
@@ -14,16 +13,18 @@ mod texture;
 mod scene;
 mod palette;
 mod accel;
+mod build;
 
 use framebuffer::Framebuffer;
 use ray_intersect::{Intersect, RayIntersect};
 use camera::Camera;
-use light::{Light, LightKind};
+use light::LightKind;
 use material::{Material, vector3_to_color};
 use palette::{Palette, CubeTemplate};
 use accel::UniformGridAccel;
 
 use crate::texture::Texture;
+use crate::build::*;
 
 const ORIGIN_BIAS: f32 = 1e-3;
 
@@ -32,44 +33,36 @@ fn lerp(a: Vector3, b: Vector3, t: f32) -> Vector3 { a * (1.0 - t) + b * t }
 
 #[inline]
 fn smooth5(t: f32) -> f32 {
-    // smoothstep quintico (suave y sin bandas)
     let t = t.clamp(0.0, 1.0);
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
 fn procedural_sky(dir: Vector3) -> Vector3 {
     let d = dir.normalized();
-    // t=0 cerca del horizonte, t=1 en el cénit
     let t = ((d.y) * 0.5 + 0.5).clamp(0.0, 1.0);
 
-    // Paleta "Nocturne Violet" (morado-negro)
-    let horizon = Vector3::new(0.08, 0.04, 0.12); // más claro en horizonte
+    let horizon = Vector3::new(0.08, 0.04, 0.12);
     let mid     = Vector3::new(0.03, 0.015, 0.06);
-    let top     = Vector3::new(0.015, 0.010, 0.030); // casi negro con tinte violeta
+    let top     = Vector3::new(0.015, 0.010, 0.030);
 
-    // Gradiente en dos tramos con curvas suaves
     let c = if t < 0.6 {
-        let k = smooth5(t / 0.6);            // horizonte -> medio
+        let k = smooth5(t / 0.6);
         lerp(horizon, mid, k)
     } else {
-        let k = smooth5((t - 0.6) / 0.4);    // medio -> cénit
+        let k = smooth5((t - 0.6) / 0.4);
         lerp(mid, top, k)
     };
 
-    // Leve brillo/magia de horizonte (muy sutil y oscuro, no “blanco”)
-    let h = (1.0 - t).clamp(0.0, 1.0);           // 1 cerca del horizonte
-    let glow = h.powf(5.0);                      // curva agresiva para que solo afecte abajo
-    let glow_col = Vector3::new(0.20, 0.05, 0.15); // magenta oscuro
-    let c = c + glow_col * (0.08 * glow);        // intensidad pequeña
+    let h = (1.0 - t).clamp(0.0, 1.0);
+    let glow = h.powf(5.0);
+    let glow_col = Vector3::new(0.20, 0.05, 0.15);
+    let c = c + glow_col * (0.08 * glow);
 
-    // Pequeña “niebla” atmosférica violeta en bajo ángulo (evita sky totalmente plano)
     let haze = (1.0 - t).powf(2.0) * 0.03;
     let c = c + Vector3::new(haze * 0.6, haze * 0.3, haze);
 
-    // clamp final a [0,1]
     Vector3::new(c.x.clamp(0.0, 1.0), c.y.clamp(0.0, 1.0), c.z.clamp(0.0, 1.0))
 }
-
 
 fn offset_origin(intersect: &Intersect, direction: &Vector3) -> Vector3 {
     let offset = intersect.normal * ORIGIN_BIAS;
@@ -100,7 +93,7 @@ fn refract(incident: &Vector3, normal: &Vector3, refractive_index: f32) -> Optio
 
 fn cast_shadow(
     intersect: &Intersect,
-    light: &Light,
+    light: &light::Light,
     objects: &[Box<dyn RayIntersect>],
     accel: &UniformGridAccel,
 ) -> f32 {
@@ -109,102 +102,108 @@ fn cast_shadow(
     if accel.occluded(&shadow_ray_origin, &light_dir, light_distance, objects) { 1.0 } else { 0.0 }
 }
 
+// ==== PREVIEW sin objeto “ghost” ====
+#[derive(Clone, Copy)]
+struct Preview { hovered_idx: usize }
+
 pub fn cast_ray(
     ray_origin: &Vector3,
     ray_direction: &Vector3,
     objects: &[Box<dyn RayIntersect>],
     accel: &UniformGridAccel,
-    light: &Light,
+    light: &light::Light,
     depth: u32,
+    preview: Option<Preview>,     // ← NUEVO
 ) -> Vector3 {
     if depth > 3 {
         return procedural_sky(*ray_direction);
     }
 
-    let intersect = accel.trace(ray_origin, ray_direction, objects);
+    let mut intersect = accel.trace(ray_origin, ray_direction, objects);
+
+    // Override del material en el objeto hovered para “preview”
+    if let Some(pv) = preview {
+        if intersect.is_intersecting && intersect.object_index == Some(pv.hovered_idx) {
+            let preview_mat = Material::new(
+                Vector3::new(0.9, 0.3, 0.3), // color opaco
+                8.0,
+                [1.0, 0.0, 0.0, 0.0],        // difuso 100%, sin especular/reflex/transp
+                1.0
+            );
+            intersect.material = preview_mat;
+            intersect.coverage = 1.0;
+        }
+    }
 
     if !intersect.is_intersecting {
         return procedural_sky(*ray_direction);
     }
 
-    // Direcciones básicas
     let (light_dir, _light_distance) = light.at(intersect.point);
     let view_dir   = (*ray_origin - intersect.point).normalized();
     let refl_light = reflect(&-light_dir, &intersect.normal).normalized();
 
-    // Sombras (occlusion tiene en cuenta coverage para “ventanas”)
     let shadow_intensity = cast_shadow(&intersect, light, objects, accel);
     let light_intensity  = light.intensity * (1.0 - shadow_intensity);
 
-    // Luz de la lámpara en float
     let light_color_v3 = Vector3::new(
         light.color.r as f32 / 255.0,
         light.color.g as f32 / 255.0,
         light.color.b as f32 / 255.0,
     );
 
-    // Difuso (Half-Lambert k=0.3) + ambient 0.15
     let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3)
         .clamp(0.0, 1.0) * light_intensity;
     let diffuse  = intersect.material.diffuse * diffuse_intensity;
 
-    // Especular Phong
     let specular_intensity = view_dir
         .dot(refl_light)
         .max(0.0)
         .powf(intersect.material.specular) * light_intensity;
     let specular = light_color_v3 * specular_intensity;
 
-    // === Mezcla con coverage (alpha de la textura) ===
-    let coverage = intersect.coverage;           // 0..1 (ventanas/hojas pueden ser <1)
+    let coverage = intersect.coverage;
     let albedo   = intersect.material.albedo;
 
-    // Phong visible solo en la fracción cubierta
     let phong_color =
         (diffuse + intersect.material.diffuse * 0.15) * (albedo[0] * coverage) +
         specular * (albedo[1] * coverage);
 
-    // Reflejo NO depende de coverage (ventana muy limpia sigue reflejando)
     let reflectivity = albedo[2];
 
-    // Transparencia efectiva: zonas poco cubiertas dejan pasar más
     let mut transparency = (1.0 - coverage) + albedo[3] * coverage;
     transparency = transparency.clamp(0.0, 1.0);
 
-    // Reflections
     let reflect_color = if reflectivity > 0.0 {
         let rdir = reflect(ray_direction, &intersect.normal).normalized();
         let ro   = offset_origin(&intersect, &rdir);
-        cast_ray(&ro, &rdir, objects, accel, light, depth + 1)
+        cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview) // ← pasa preview
     } else {
         Vector3::zero()
     };
 
-    // Refractions
     let refract_color = if transparency > 0.0 {
         if let Some(tdir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
             let ro = offset_origin(&intersect, &tdir);
-            cast_ray(&ro, &tdir, objects, accel, light, depth + 1)
+            cast_ray(&ro, &tdir, objects, accel, light, depth + 1, preview) // ← pasa preview
         } else {
-            // TIR → refleja
             let rdir = reflect(ray_direction, &intersect.normal).normalized();
             let ro   = offset_origin(&intersect, &rdir);
-            cast_ray(&ro, &rdir, objects, accel, light, depth + 1)
+            cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview) // ← pasa preview
         }
     } else {
         Vector3::zero()
     };
 
-    // === “Visible-light glint”: puntito de la luz en superficies reflectivas ===
+    // Glint especular “mirror-light”
     let mut glint = Vector3::zero();
     let mirror_dir    = reflect(ray_direction, &intersect.normal).normalized();
     let mirror_origin = offset_origin(&intersect, &mirror_dir);
 
-    // Ajustes
-    let hardness_point = 800.0; // mayor = punto más pequeño (puntual)
-    let hardness_dir   = 800.0; // mayor = punto más pequeño (direccional)
+    let hardness_point = 800.0;
+    let hardness_dir   = 800.0;
     let gain           = 1.0;
-    let refl_bias      = (reflectivity + 0.05).min(1.0); // para que aparezca con poco reflejo
+    let refl_bias      = (reflectivity + 0.05).min(1.0);
 
     match light.kind {
         LightKind::Point => {
@@ -230,7 +229,6 @@ pub fn cast_ray(
         }
     }
 
-    // Combinación final
     let k_phong = (1.0 - reflectivity - transparency).max(0.0);
     phong_color * k_phong + reflect_color * reflectivity + refract_color * transparency + glint
 }
@@ -240,12 +238,12 @@ pub fn render(
     objects: &[Box<dyn RayIntersect>],
     accel: &UniformGridAccel,
     camera: &Camera,
-    light: &Light,
+    light: &light::Light,
+    preview: Option<Preview>,     // ← NUEVO
 ) {
     let w = framebuffer.width as usize;
     let h = framebuffer.height as usize;
 
-    // Snapshot de la base de cámara para lectura en hilos
     let cam = camera.basis();
 
     let width_f = framebuffer.width as f32;
@@ -254,18 +252,13 @@ pub fn render(
     let fov = PI / 3.0;
     let perspective_scale = (fov * 0.5).tan();
 
-    // ¿Cuántos hilos usar?
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let rows_per = (h + threads - 1) / threads;
 
-    // Buffer final (de destino) accesible tras juntar resultados
     let pixels = framebuffer.pixels_mut();
 
-    // Scoped threads: pueden tomar prestado &accel y &objects sin 'static
     std::thread::scope(|scope| {
-        // Guardamos los join handles y cada bloque local
         let mut joins = Vec::with_capacity(threads);
-        // Contenedor para resultados por hilo (y_start, bloque)
         let mut results: Vec<(usize, Vec<Color>)> = Vec::with_capacity(threads);
 
         for t in 0..threads {
@@ -273,17 +266,15 @@ pub fn render(
             if y_start >= h { break; }
             let y_end = ((t + 1) * rows_per).min(h);
 
-            // Capturas por copia (baratas)
-            let light_c = *light; // Light es Copy
+            let light_c = *light;
             let aspect_ratio_c = aspect_ratio;
             let perspective_scale_c = perspective_scale;
             let width_f_c = width_f;
             let height_f_c = height_f;
             let cam_c = cam;
             let span_w = w;
+            let preview_c = preview; // copia para el hilo
 
-            // Reservamos un buffer local por hilo
-            // Nota: lo crearemos *dentro* del hilo para no mover ownership raro aquí.
             let handle = scope.spawn(move || {
                 let span_h = y_end - y_start;
                 let mut local = vec![Color::BLACK; span_h * span_w];
@@ -300,15 +291,13 @@ pub fn render(
                         sy = sy * perspective_scale_c;
 
                         let v_cam = Vector3::new(sx, sy, -1.0).normalized();
-                        // base change manual evitando método sobre &self
                         let ray_dir = Vector3::new(
                             v_cam.x * cam_c.right.x + v_cam.y * cam_c.up.x - v_cam.z * cam_c.forward.x,
                             v_cam.x * cam_c.right.y + v_cam.y * cam_c.up.y - v_cam.z * cam_c.forward.y,
                             v_cam.x * cam_c.right.z + v_cam.y * cam_c.up.z - v_cam.z * cam_c.forward.z,
                         );
 
-                        // Usamos &accel y &objects prestados del scope
-                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0);
+                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0, preview_c);
                         local[row_off * span_w + x] = vector3_to_color(rgb);
                     }
                 }
@@ -319,13 +308,11 @@ pub fn render(
             joins.push(handle);
         }
 
-        // Recogemos resultados (join implícito al final del scope, pero queremos orden)
         for j in joins {
             let (y_start, local) = j.join().expect("Hilo de render falló");
             results.push((y_start, local));
         }
 
-        // Copiamos cada bloque local a su sitio en el framebuffer
         for (y_start, local) in results {
             let span_h = local.len() / w;
             for row_off in 0..span_h {
@@ -338,13 +325,43 @@ pub fn render(
     });
 }
 
+#[inline]
+fn neighbor_cell_center_from_face_hit(
+    hit_point: Vector3,
+    hit_normal: Vector3,
+    size: Vector3,
+    origin: Vector3,
+) -> Vector3 {
+    // Mete el punto apenas dentro del bloque golpeado
+    let eps = 1e-4;
+    let p_inside = hit_point - hit_normal * eps;
+
+    // Índices de la celda del bloque golpeado
+    let rel = p_inside - origin;
+    let mut ix = (rel.x / size.x).floor() as i32;
+    let mut iy = (rel.y / size.y).floor() as i32;
+    let mut iz = (rel.z / size.z).floor() as i32;
+
+    // Avanza SOLO en el eje de la normal hacia el vecino
+    if hit_normal.x > 0.0 { ix += 1; } else if hit_normal.x < 0.0 { ix -= 1; }
+    if hit_normal.y > 0.0 { iy += 1; } else if hit_normal.y < 0.0 { iy -= 1; }
+    if hit_normal.z > 0.0 { iz += 1; } else if hit_normal.z < 0.0 { iz -= 1; }
+
+    // Centro de esa celda vecina
+    Vector3::new(
+        origin.x + (ix as f32 + 0.5) * size.x,
+        origin.y + (iy as f32 + 0.5) * size.y,
+        origin.z + (iz as f32 + 0.5) * size.z,
+    )
+}
+
 fn main() {
     let window_width = 1300;
     let window_height = 900;
- 
+
     let (mut window, thread) = raylib::init()
         .size(window_width, window_height)
-        .title("Raytracer Example")
+        .title("Raytracer Builder")
         .log_level(TraceLogLevel::LOG_WARNING)
         .build();
 
@@ -356,68 +373,21 @@ fn main() {
         .expect("No se pudo crear la textura persistente");
     framebuffer.attach_texture(texture);
 
-    // ======= PALETA (MATERIALES ESPECÍFICOS POR BLOQUE) =======
-    let stone = Material::new(
-        Vector3::new(0.55, 0.55, 0.55),
-        20.0,
-        [0.90, 0.10, 0.0, 0.0],
-        0.0,
-    );
-
-    let grass_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        10.0,
-        [0.95, 0.05, 0.0, 0.0],
-        0.0,
-    );
-
-    let dirt_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        8.0,
-        [0.98, 0.02, 0.0, 0.0],
-        0.0,
-    );
-
-    let log_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        15.0,
-        [0.92, 0.08, 0.0, 0.0],
-        0.0,
-    );
-
-    let planks_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        12.0,
-        [0.90, 0.10, 0.0, 0.0],
-        0.0,
-    );
-
-    let glass_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        120.0,
-        [0.80, 0.15, 0.06, 0.0],
-        1.5,
-    );
-
-    let leaves_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        35.0,
-        [0.92, 0.08, 0.0, 0.0],
-        0.0,
-    );
-
-    let ice_mat = Material::new(
-        Vector3::new(1.0, 1.0, 1.0),
-        10.0,
-        [0.80, 0.10, 0.20, 0.05],
-        1.31,
-    );
+    // ======= PALETA (MATERIALES) =======
+    let stone = Material::new(Vector3::new(0.55, 0.55, 0.55), 20.0, [0.90, 0.10, 0.0, 0.0], 0.0);
+    let grass_mat = Material::new(Vector3::new(1.0, 1.0, 1.0), 10.0, [0.95, 0.05, 0.0, 0.0], 0.0);
+    let dirt_mat  = Material::new(Vector3::new(1.0, 1.0, 1.0), 8.0,  [0.98, 0.02, 0.0, 0.0], 0.0);
+    let log_mat   = Material::new(Vector3::new(1.0, 1.0, 1.0), 15.0, [0.92, 0.08, 0.0, 0.0], 0.0);
+    let planks_mat= Material::new(Vector3::new(1.0, 1.0, 1.0), 12.0, [0.90, 0.10, 0.0, 0.0], 0.0);
+    let glass_mat = Material::new(Vector3::new(1.0, 1.0, 1.0),120.0,[0.80, 0.15, 0.06, 0.0], 1.5);
+    let leaves_mat= Material::new(Vector3::new(1.0, 1.0, 1.0), 35.0, [0.92, 0.08, 0.0, 0.0], 0.0);
+    let ice_mat   = Material::new(Vector3::new(1.0, 1.0, 1.0), 10.0, [0.80, 0.10, 0.20, 0.05], 1.31);
 
     use std::sync::Arc;
-    let grass_top   = Arc::new(Texture::from_file("assets/snow_grass/posy.png"));
-    let grass_side  = Arc::new(Texture::from_file("assets/snow_grass/posx.png"));
-    let grass_bottom= Arc::new(Texture::from_file("assets/snow_grass/negy.png"));
-    let dirt_tex    = Arc::new(Texture::from_file("assets/dirt/dirt.png"));
+    let grass_top    = Arc::new(Texture::from_file("assets/snow_grass/posy.png"));
+    let grass_side   = Arc::new(Texture::from_file("assets/snow_grass/posx.png"));
+    let grass_bottom = Arc::new(Texture::from_file("assets/snow_grass/negy.png"));
+    let dirt_tex     = Arc::new(Texture::from_file("assets/dirt/dirt.png"));
 
     let log_top     = Arc::new(Texture::from_file("assets/spruce_log/spruce_log_top.png"));
     let log_bottom  = Arc::new(Texture::from_file("assets/spruce_log/spruce_log_top.png"));
@@ -426,26 +396,18 @@ fn main() {
     let planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
     let uslab_planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
     let lslab_planks = Arc::new(Texture::from_file("assets/spruce_planks/spruce_planks.png"));
-    
+
     let glass = Arc::new(Texture::from_file("assets/glass/glass.png"));
-    let glass_tpl = CubeTemplate::with_same_texture_image_alpha_window(
-        glass_mat,
-        glass.clone(),
-        0.05,
-    );
+    let glass_tpl = CubeTemplate::with_same_texture_image_alpha_window(glass_mat, glass.clone(), 0.05);
 
     let leaves = Arc::new(Texture::from_file("assets/spruce_leaves/spruce_leaves.png"));
     let leaves_tpl = CubeTemplate::with_same_texture_tinted_black_transparent(
-        leaves_mat,
-        leaves.clone(),
-        Vector3::new(0.2, 0.6, 0.25),
-        0.05,
+        leaves_mat, leaves.clone(), Vector3::new(0.2, 0.6, 0.25), 0.05,
     );
 
     let ice = Arc::new(Texture::from_file("assets/ice/ice.png"));
 
     let mut palette = Palette::new();
-    //palette.set('G', CubeTemplate::material_only(stone));
     palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
     palette.set('D', CubeTemplate::with_same_texture(dirt_mat,  dirt_tex));
     palette.set('L', CubeTemplate::with_top_bottom_sides(log_mat,  log_top, log_bottom, log_side));
@@ -453,10 +415,10 @@ fn main() {
     palette.set('G', glass_tpl);
     palette.set('l', leaves_tpl);
     palette.set('H', CubeTemplate::with_same_texture(ice_mat,  ice));
-    palette.set('_', CubeTemplate::with_same_texture(planks_mat, uslab_planks));
-    palette.set('-', CubeTemplate::with_same_texture(planks_mat, lslab_planks));
+    palette.set('-', CubeTemplate::with_same_texture(planks_mat,  uslab_planks));
+    palette.set('_', CubeTemplate::with_same_texture(planks_mat,  lslab_planks));
 
-    // ===== CARGA ESCENA ASCII SIN GAPS =====
+    // ===== CARGA ESCENA ASCII =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);
     let mut params = scene::default_params(cube_size);
     params.gap = Vector3::new(0.0, 0.0, 0.0);
@@ -466,64 +428,59 @@ fn main() {
 
     let default_mat = stone;
 
-    let objects: Vec<Box<dyn RayIntersect>> =
+    // Escena dinámica (mutable)
+    let mut objects: Vec<Box<dyn RayIntersect>> =
         scene::load_ascii_layers_with_palette("assets/scene", &params, &palette, default_mat)
             .expect("Error leyendo assets/scene");
 
-    // ===== Aceleración por grilla =====
-    let accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
+    // ===== Aceleración (inicial) =====
+    let mut accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
 
-    // Cámara
+    // ===== Cámara =====
     let mut camera = Camera::new(
         Vector3::new(20.0, 10.0, 20.0),
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
     );
 
-    // --- NUEVO: configura la cámara orbital de forma centralizada
     camera.set_config(camera::CameraConfig {
-        orbit_sensitivity_yaw:   1.0,   // súbele si quieres girar más rápido
+        orbit_sensitivity_yaw:   1.0,
         orbit_sensitivity_pitch: 1.0,
-        zoom_sensitivity:        0.5,   // controla “lo que avanza” cada paso de zoom
-        min_pitch:  -1.45, // -83°
-        max_pitch:   1.45, //  83°
-        min_distance: 0.5,  // mínimo acercamiento
-        max_distance: 2000.0, // MUY grande pero manejable
+        zoom_sensitivity:        0.5,
+        min_pitch:  -1.45,
+        max_pitch:   1.45,
+        min_distance: 0.5,
+        max_distance: 2000.0,
     });
-    let rotation_speed = PI / 100.0; // puedes mantener esta constante para inputs discretos
+    let rotation_speed = PI / 100.0;
 
-    // ===== Luz (mut) =====
-    // Cambia a Point si prefieres:
-    // let mut light = Light::new(Vector3::new(1.0, -1.0, 5.0), Color::WHITE, 1.5);
-    let mut light = Light::directional(Vector3::new(-1.0, -1.0, 0.3), Color::new(255,255,255,255), 1.2);
-
-    // Controles
+    // ===== Luz =====
+    let mut light = light::Light::directional(Vector3::new(-1.0, -1.0, 0.3), Color::new(255,255,255,255), 1.2);
     let dir_rot_speed = PI / 300.0;
     let move_speed = 0.15;
 
+    // ===== Builder HUD/estado =====
+    let mut builder = BuildState::new(vec!['X', 'D', 'L', 'P', 'G', 'l', 'H'], cube_size);
+    let grid_origin = params.origin;
+
     while !window.window_should_close() {
-        // Cámara orbit
+        // ====== INPUT Cámara ======
         if window.is_key_down(KeyboardKey::KEY_LEFT)  { camera.orbit( rotation_speed, 0.0); }
         if window.is_key_down(KeyboardKey::KEY_RIGHT) { camera.orbit(-rotation_speed, 0.0); }
-        if window.is_key_down(KeyboardKey::KEY_DOWN)    { camera.orbit(0.0, -rotation_speed); }
-        if window.is_key_down(KeyboardKey::KEY_UP)  { camera.orbit(0.0,  rotation_speed); }
-
+        if window.is_key_down(KeyboardKey::KEY_DOWN)  { camera.orbit(0.0, -rotation_speed); }
+        if window.is_key_down(KeyboardKey::KEY_UP)    { camera.orbit(0.0,  rotation_speed); }
         if window.is_key_down(KeyboardKey::KEY_PAGE_UP)   { camera.zoom(-0.5); }
         if window.is_key_down(KeyboardKey::KEY_PAGE_DOWN) { camera.zoom( 0.5); }
 
-        // Toggle tipo de luz
         if window.is_key_pressed(KeyboardKey::KEY_ONE) { light.kind = LightKind::Point; }
         if window.is_key_pressed(KeyboardKey::KEY_TWO) { light.kind = LightKind::Directional; }
 
-        // Rotar dirección (direccional): J/L (yaw), I/K (pitch)
         if matches!(light.kind, LightKind::Directional) {
             if window.is_key_down(KeyboardKey::KEY_J) { light.yaw_pitch( dir_rot_speed, 0.0); }
             if window.is_key_down(KeyboardKey::KEY_L) { light.yaw_pitch(-dir_rot_speed, 0.0); }
             if window.is_key_down(KeyboardKey::KEY_I) { light.yaw_pitch(0.0,  dir_rot_speed); }
             if window.is_key_down(KeyboardKey::KEY_K) { light.yaw_pitch(0.0, -dir_rot_speed); }
         }
-
-        // Mover posición (puntual): WASD + R/F
         if matches!(light.kind, LightKind::Point) {
             if window.is_key_down(KeyboardKey::KEY_W) { light.translate(Vector3::new( 0.0, 0.0, -move_speed)); }
             if window.is_key_down(KeyboardKey::KEY_S) { light.translate(Vector3::new( 0.0, 0.0,  move_speed)); }
@@ -533,8 +490,66 @@ fn main() {
             if window.is_key_down(KeyboardKey::KEY_F) { light.translate(Vector3::new( 0.0, -move_speed, 0.0)); }
         }
 
+        // ====== INPUT Builder ======
+        if window.is_key_pressed(KeyboardKey::KEY_Q) { builder.prev(); }
+        if window.is_key_pressed(KeyboardKey::KEY_E) { builder.next(); }
+
+        // ====== PICK / PREVIEW ======
+        let mouse = window.get_mouse_position();
+        let basis = camera.basis();
+        let fov = PI / 3.0;
+        let ray_dir = mouse_ray_dir(
+            mouse,
+            window_width as f32,
+            window_height as f32,
+            fov,
+            basis.right, basis.up, basis.forward,
+        );
+        let ray_origin = basis.eye;
+
+        let hit = accel.trace(&ray_origin, &ray_dir, &objects);
+
+        // Prepara preview si hay objeto bajo el cursor
+        let mut preview: Option<Preview> = None;
+        if hit.is_intersecting {
+            if let Some(idx) = hit.object_index {
+                preview = Some(Preview { hovered_idx: idx });
+            }
+        }
+
+        // Colocación/Eliminación
+        if hit.is_intersecting {
+            // Celda adyacente según normal → click izquierdo
+            let target_center = neighbor_cell_center_from_face_hit(
+                hit.point, hit.normal, builder.cube_size, grid_origin
+            );
+
+
+            if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+                if let Some(tpl) = palette.get(builder.current_block_char()) {
+                    let block = make_block_from_palette(target_center, builder.cube_size, tpl);
+                    objects.push(block);
+                    accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
+                }
+            }
+
+            // Click derecho: quitar el bloque bajo el cursor
+            if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
+                if let Some(idx) = hit.object_index {
+                    if idx < objects.len() {
+                        objects.swap_remove(idx);
+                        accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
+                    }
+                }
+            }
+        }
+
+        // ===== Render =====
         framebuffer.clear();
-        render(&mut framebuffer, &objects, &accel, &camera, &light);
-        framebuffer.swap_buffers(&mut window, &thread);
+        render(&mut framebuffer, &objects, &accel, &camera, &light, preview);
+
+        framebuffer.swap_buffers_with(&mut window, &thread, |d| {
+            draw_hud_text(d, &builder);
+        });
     }
 }

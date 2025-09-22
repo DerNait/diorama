@@ -12,6 +12,7 @@ pub struct Intersect {
     /// Cobertura 0..1 del texel (1 = opaco, 0 = totalmente transparente).
     /// Se usa para sombreado y para que las sombras ignoren superficies “ventana”.
     pub coverage: f32,
+    pub object_index: Option<usize>,
 }
 
 impl Intersect {
@@ -23,6 +24,7 @@ impl Intersect {
             is_intersecting: true,
             material,
             coverage: 1.0,
+            object_index: None,
         }
     }
 
@@ -37,6 +39,7 @@ impl Intersect {
             is_intersecting: true,
             material,
             coverage: coverage.clamp(0.0, 1.0),
+            object_index: None,
         }
     }
 
@@ -48,6 +51,7 @@ impl Intersect {
             is_intersecting: false,
             material: Material::black(),
             coverage: 0.0,
+            object_index: None,
         }
     }
 }

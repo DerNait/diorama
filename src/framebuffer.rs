@@ -66,12 +66,17 @@ impl Framebuffer {
         self.current_color = color;
     }
 
-    /// Sube el buffer CPU a la textura persistente y la dibuja.
-    pub fn swap_buffers(
-        &mut self, // <- cambia a &mut self
+    /// Sube el buffer CPU a la textura persistente y **pinta**.
+    /// Acepta un `draw_overlay` para que dibujes el HUD en el **mismo frame** (una sola Begin/End).
+    pub fn swap_buffers_with<F>(
+        &mut self,
         window: &mut RaylibHandle,
         raylib_thread: &RaylibThread,
-    ) {
+        mut draw_overlay: F,
+    )
+    where
+        F: FnMut(&mut RaylibDrawHandle),
+    {
         if let Some(tex) = &mut self.texture_gpu {
             let byte_len = self.pixels.len() * std::mem::size_of::<Color>();
             let bytes: &[u8] = unsafe {
@@ -82,9 +87,13 @@ impl Framebuffer {
             let rect = Rectangle::new(0.0, 0.0, self.width as f32, self.height as f32);
             tex.update_texture_rec(rect, bytes).expect("update_texture_rec failed");
 
+            // Dibuja frame + overlay en una sola pasada
             let mut d = window.begin_drawing(raylib_thread);
             d.clear_background(Color::BLACK);
             d.draw_texture(tex, 0, 0, Color::WHITE);
+
+            // HUD/overlay del usuario
+            draw_overlay(&mut d);
         }
     }
 }
