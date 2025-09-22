@@ -460,8 +460,46 @@ fn main() {
     let move_speed = 0.15;
 
     // ===== Builder HUD/estado =====
-    let mut builder = BuildState::new(vec!['X', 'D', 'L', 'P', 'G', 'l', 'H'], cube_size);
+    // Orden de opciones (coincide con tus teclas Q/E):
+    let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H'];
+
+    // Carga sprites del HUD
+    let hotbar_tex = window
+        .load_texture(&thread, "assets/ui/hotbar.png")
+        .expect("No se pudo cargar assets/ui/hotbar.png");
+    let hotbar_sel_tex = window
+        .load_texture(&thread, "assets/ui/hotbar_selection.png")
+        .expect("No se pudo cargar assets/ui/hotbar_selection.png");
+
+    // Carga íconos (MISMO ORDEN que `options`)
+    // Reutilizo las mismas texturas 2D del juego como íconos.
+    let icon_paths = vec![
+        "assets/snow_grass/posy.png",           // 'X' (grass top)
+        "assets/dirt/dirt.png",                 // 'D'
+        "assets/spruce_log/spruce_log_top.png", // 'L'
+        "assets/spruce_planks/spruce_planks.png", // 'P'
+        "assets/glass/glass.png",               // 'G'
+        "assets/spruce_leaves/spruce_leaves.png", // 'l'
+        "assets/ice/ice.png",                   // 'H'
+    ];
+    let mut icons: Vec<Texture2D> = Vec::with_capacity(icon_paths.len());
+    for p in icon_paths {
+        icons.push(window.load_texture(&thread, p).expect(&format!("No se pudo cargar {}", p)));
+    }
+
+    let hud_cfg = build::HudConfig { scale: 2.6, bottom_margin: 10, icon_padding_px: 1.0 };
+
+    // Crea el estado con sprites
+    let mut builder = BuildState::new_with_sprites_and_cfg(
+        options,
+        cube_size,
+        hotbar_tex,
+        hotbar_sel_tex,
+        icons,
+        hud_cfg
+    );
     let grid_origin = params.origin;
+
 
     while !window.window_should_close() {
         // ====== INPUT Cámara ======
@@ -549,7 +587,7 @@ fn main() {
         render(&mut framebuffer, &objects, &accel, &camera, &light, preview);
 
         framebuffer.swap_buffers_with(&mut window, &thread, |d| {
-            draw_hud_text(d, &builder);
+            draw_hud_hotbar(d, &builder, window_width, window_height);
         });
     }
 }
