@@ -196,25 +196,30 @@ pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i
     let hb_x = (screen_w as f32 - hb_w) * 0.5;
     let hb_y = (screen_h as f32 - hb_h) - bm as f32;
 
-    // 4) Dibujar hotbar escalado
+    // 4) Dibujar hotbar
     let hb_src = Rectangle { x:0.0, y:0.0, width:hud.hotbar.width() as f32, height:hud.hotbar.height() as f32 };
     let hb_dst = Rectangle { x:hb_x, y:hb_y, width:hb_w, height:hb_h };
     d.draw_texture_pro(&hud.hotbar, hb_src, hb_dst, Vector2::zero(), 0.0, Color::WHITE);
 
-    // 5) Geometría de slots a partir del ancho ESCALADO
+    // 5) Geometría de slots
     let slots = 9usize;
-    let pitch = hb_w / slots as f32;                  // distancia entre centros
+    let pitch = hb_w / slots as f32;      // distancia entre centros
     let cx0   = hb_x + pitch * 0.5;
     let cy    = hb_y + hb_h * 0.5;
 
-    // 6) Iconos: margen de 2px por lado escalado → restamos 4*pad en total
+    // 6) Paginado: muestra el tramo donde cae la selección
+    let total = state.options.len();
+    let start = (state.sel_idx / slots) * slots;
+    let end   = (start + slots).min(total);
+    let visible_count = end - start;
+
+    // 7) Iconos (padding de 2px por lado escalado)
     let icon_size = (pitch.min(hb_h) - 2.0 * pad * 2.0).max(1.0);
 
-    // 7) Dibujar iconos
-    let count = state.options.len().min(slots);
-    for i in 0..count {
-        if i >= hud.icons.len() { break; }
-        let icon = &hud.icons[i];
+    for i in 0..visible_count {
+        let icon_ix = start + i;
+        if icon_ix >= hud.icons.len() { break; }
+        let icon = &hud.icons[icon_ix];
 
         let center_x = cx0 + i as f32 * pitch;
         let src = Rectangle { x:0.0, y:0.0, width:icon.width() as f32, height:icon.height() as f32 };
@@ -227,15 +232,24 @@ pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i
         d.draw_texture_pro(icon, src, dst, Vector2::zero(), 0.0, Color::WHITE);
     }
 
-    // 8) Selección, también escalada
+    // 8) Selección
     let sel_w = hud.selection.width() as f32 * s;
     let sel_h = hud.selection.height() as f32 * s;
-    let sel_cx = cx0 + state.sel_idx.min(slots - 1) as f32 * pitch;
+    let local_sel = state.sel_idx.saturating_sub(start).min(visible_count.saturating_sub(1));
+    let sel_cx = cx0 + local_sel as f32 * pitch;
     let sel_cy = cy;
 
     let sel_src = Rectangle { x:0.0, y:0.0, width:hud.selection.width() as f32, height:hud.selection.height() as f32 };
     let sel_dst = Rectangle { x:sel_cx - sel_w * 0.5, y:sel_cy - sel_h * 0.5, width:sel_w, height:sel_h };
     d.draw_texture_pro(&hud.selection, sel_src, sel_dst, Vector2::zero(), 0.0, Color::WHITE);
+
+    // 9) (Opcional) Indicador de página
+    if total > slots {
+        let page = start / slots + 1;
+        let pages = (total + slots - 1) / slots;
+        let txt = format!("Página {}/{}", page, pages);
+        d.draw_text(&txt, (hb_x + hb_w - 90.0) as i32, (hb_y - 16.0) as i32, 14, Color::LIGHTGRAY);
+    }
 }
 
 /// HUD textual (fallback) — lo dejamos por si quieres ver info de depuración.

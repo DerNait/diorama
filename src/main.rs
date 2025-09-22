@@ -395,6 +395,14 @@ fn main() {
     let leaves_mat= Material::new(Vector3::new(1.0, 1.0, 1.0), 35.0, [0.92, 0.08, 0.0, 0.0], 0.0);
     let ice_mat   = Material::new(Vector3::new(1.0, 1.0, 1.0), 10.0, [0.80, 0.10, 0.20, 0.05], 1.31);
 
+    // 👇 NUEVOS (texturizados => diffuse=blanco; specular/reflect ajustados)
+    let diamond_mat = Material::new(Vector3::new(1.0, 1.0, 1.0), 140.0, [0.88, 0.12, 0.10, 0.0], 0.0);
+    let gold_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0), 120.0, [0.85, 0.15, 0.12, 0.0], 0.0);
+    let iron_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0),  60.0, [0.90, 0.10, 0.08, 0.0], 0.0);
+
+    // Lava: sin especular, sin reflexión; se verá “mate” (más el ambiente base de tu shader)
+    let lava_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0),   0.0, [1.00, 0.00, 0.00, 0.0], 0.0);
+
     use std::sync::Arc;
     let grass_top    = Arc::new(Texture::from_file("assets/snow_grass/posy.png"));
     let grass_side   = Arc::new(Texture::from_file("assets/snow_grass/posx.png"));
@@ -419,6 +427,11 @@ fn main() {
 
     let ice = Arc::new(Texture::from_file("assets/ice/ice.png"));
 
+    let diamond_tex = Arc::new(Texture::from_file("assets/diamond_block/diamond_block.png"));
+    let gold_tex    = Arc::new(Texture::from_file("assets/gold_block/gold_block.png"));
+    let iron_tex    = Arc::new(Texture::from_file("assets/iron_block/iron_block.png"));
+    let lava_tex    = Arc::new(Texture::from_file("assets/lava/lava.png"));
+
     let mut palette = Palette::new();
     palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
     palette.set('D', CubeTemplate::with_same_texture(dirt_mat,  dirt_tex));
@@ -429,6 +442,10 @@ fn main() {
     palette.set('H', CubeTemplate::with_same_texture(ice_mat,  ice));
     palette.set('-', CubeTemplate::with_same_texture(planks_mat,  uslab_planks));
     palette.set('_', CubeTemplate::with_same_texture(planks_mat,  lslab_planks));
+    palette.set('M', CubeTemplate::with_same_texture(diamond_mat, diamond_tex));
+    palette.set('O', CubeTemplate::with_same_texture(gold_mat,    gold_tex));   
+    palette.set('I', CubeTemplate::with_same_texture(iron_mat,    iron_tex));   
+    palette.set('V', CubeTemplate::with_same_texture(lava_mat,    lava_tex));
 
     // ===== CARGA ESCENA ASCII =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);
@@ -481,7 +498,7 @@ fn main() {
     let mut current_skybox: usize = 0; // 0 = sky1, 1 = sky2
 
     // ===== Builder HUD/estado =====
-    let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H'];
+    let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H', 'M', 'O', 'I', 'V'];
 
     let hotbar_tex = window
         .load_texture(&thread, "assets/ui/hotbar.png")
@@ -491,13 +508,17 @@ fn main() {
         .expect("No se pudo cargar assets/ui/hotbar_selection.png");
 
     let icon_paths = vec![
-        "assets/snow_grass/posy.png",
-        "assets/dirt/dirt.png",
-        "assets/spruce_log/spruce_log_top.png",
-        "assets/spruce_planks/spruce_planks.png",
-        "assets/glass/glass.png",
-        "assets/spruce_leaves/spruce_leaves.png",
-        "assets/ice/ice.png",
+        "assets/snow_grass/posy.png",             // 'X' (grass top)
+        "assets/dirt/dirt.png",                   // 'D'
+        "assets/spruce_log/spruce_log_top.png",   // 'L'
+        "assets/spruce_planks/spruce_planks.png", // 'P'
+        "assets/glass/glass.png",                 // 'G'
+        "assets/spruce_leaves/spruce_leaves.png", // 'l'
+        "assets/ice/ice.png",                     // 'H'
+        "assets/diamond_block/diamond_block.png", // 'M'
+        "assets/gold_block/gold_block.png",       // 'O'
+        "assets/iron_block/iron_block.png",       // 'I'
+        "assets/lava/lava.png",                   // 'V'
     ];
     let mut icons: Vec<Texture2D> = Vec::with_capacity(icon_paths.len());
     for p in icon_paths {
