@@ -4,22 +4,22 @@ e                       e
                          
                          
                          
-   ____                  
-  _PPPP_                 
-  _PPPP_                 
-  _PPPP_                 
-  _PPPP_                 
-   ____                  
-                         
-                         
-                    l    
-                   lLl   
-                    l    
-                         
-                     lll 
-                    lllll
- lll                llLll
-lllll               lllll
-llLll                lll 
-lllll                    
- lll                    e
+   LPPL                  
+  L    L                 
+  P    P                 
+  P    P                 
+  L    L                 
+   LPPL                  
+                       XX
+                       XX
+                        X
+X      _P----P_     L   X
+XXX    _P----P_          
+XXXX   _P----P_          
+XXXX                   XX
+XXXX                  XXX
+XXXXXX               XDXX
+XXXXXX               XXXX
+XXDXXXX               XXX
+XXXXXXXX               XX
+XXXXXXXX                 

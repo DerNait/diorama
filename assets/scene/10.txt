@@ -3,23 +3,23 @@ e                       e
                          
                          
                          
+   PPPP                  
+  PLPPLP                 
+ PL    LP                
+ PP    PP                
+ PP    PP                
+ PL    LP                
+  PLPPLP                 
+   PPPP                  
+                   lll   
+                  lllll  
+                  llLll  
+                  lllll  
+                   lll   
                          
                          
-                         
-                         
-                         
-                         
-                         
-                         
-                         
-                    l    
-                   lLl   
-                    l    
-                         
-                     lll 
-                    lllll
- lll                llLll
-lllll               lllll
-llLll                lll 
-lllll                    
- lll                    e
+                      L  
+  l                      
+ lLl                     
+  l                      
+e                       e

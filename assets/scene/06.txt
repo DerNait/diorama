@@ -1,25 +1,25 @@
-e                       e
-                         
-                         
-                         
-                         
-                         
-   LGGL                  
-  L    L                 
-  G    G                 
-  G    G                 
-  L    L                 
-   LGGL                  
-                         
-                         
-                    l    
-         ____      lLl   
-         ____       l    
-         ____            
-                         
-                         
-                      L  
-                         
-  L                      
-                         
-e                       e
+DDDDDDDDDDDDDXXHHHHHHHHHH
+DXXXXXXXXXXXXXXHHHHHHHHHH
+DXXXXXXXXXXXXXXHHHHHHHHHH
+DXXXXXXXXXXXXXHHHHHHHHHHH
+DXXXXXXXXXXXXHHHHHHHHHHHH
+DXXXXXXXXXXXXHHHHHHHHHHHH
+DXXXXXXXXXXXXHHHHHHHHHHHH
+DXXXXXXXXXXXHHHHHHHHHHHHH
+DXXXXXXXXXXXHHHHHHHHHHHHH
+DXXXXXXXXXXXHHHHXHHHHHHHH
+DXXXXXXXXXXXXHHHXXHHHHHHX
+DXXXXXXXXXXXXHHHXXXXXXXXX
+DXXXXXXXXXXXHHHHXXXXXXXXD
+DXXXXXXXXXXHHHHHXXXXXXXXD
+DXXXXXXXXXHHHHHXXXXXXXXXD
+DXXXXXXXXHHHHHHXXXXXXXXXD
+DXXXXXXXXHHHHHXXXXXXXXXXD
+DXXXXXXXXHHHHXXXXXXXXXXXD
+DXXXXXXXXHHHHXXXXXXXXXXXD
+DXXXXXXXXHHHHHXXXXXXXXXXD
+DXXXXXXXXXHHHHHXXXXXXXXXD
+DXXXXXXXXXHHHHHXXXXXXXXXD
+DXXXXXXXXXXHHHHXXXXXXXXXD
+DXXXXXXXXXXHHHHXXXXXXXXXD
+DDDDDDDDDDXHHHHXXXXDDDDDD

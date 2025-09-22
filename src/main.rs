@@ -386,7 +386,7 @@ fn main() {
     framebuffer.attach_texture(texture);
 
     // ======= PALETA (MATERIALES) =======
-    let stone = Material::new(Vector3::new(0.55, 0.55, 0.55), 20.0, [0.90, 0.10, 0.0, 0.0], 0.0);
+    let stone_mat = Material::new(Vector3::new(0.55, 0.55, 0.55), 20.0, [0.90, 0.10, 0.0, 0.0], 0.0);
     let grass_mat = Material::new(Vector3::new(1.0, 1.0, 1.0), 10.0, [0.95, 0.05, 0.0, 0.0], 0.0);
     let dirt_mat  = Material::new(Vector3::new(1.0, 1.0, 1.0), 8.0,  [0.98, 0.02, 0.0, 0.0], 0.0);
     let log_mat   = Material::new(Vector3::new(1.0, 1.0, 1.0), 15.0, [0.92, 0.08, 0.0, 0.0], 0.0);
@@ -432,6 +432,12 @@ fn main() {
     let iron_tex    = Arc::new(Texture::from_file("assets/iron_block/iron_block.png"));
     let lava_tex    = Arc::new(Texture::from_file("assets/lava/lava.png"));
 
+    let diamond_ore_tex    = Arc::new(Texture::from_file("assets/diamond_ore/diamond_ore.png"));
+    let iron_ore_tex    = Arc::new(Texture::from_file("assets/iron_ore/iron_ore.png"));
+    let gold_ore_tex    = Arc::new(Texture::from_file("assets/gold_ore/gold_ore.png"));
+    
+    let stone    = Arc::new(Texture::from_file("assets/stone/stone.png"));
+
     let mut palette = Palette::new();
     palette.set('X', CubeTemplate::with_top_bottom_sides(grass_mat, grass_top, grass_bottom, grass_side));
     palette.set('D', CubeTemplate::with_same_texture(dirt_mat,  dirt_tex));
@@ -442,10 +448,17 @@ fn main() {
     palette.set('H', CubeTemplate::with_same_texture(ice_mat,  ice));
     palette.set('-', CubeTemplate::with_same_texture(planks_mat,  uslab_planks));
     palette.set('_', CubeTemplate::with_same_texture(planks_mat,  lslab_planks));
+
     palette.set('M', CubeTemplate::with_same_texture(diamond_mat, diamond_tex));
     palette.set('O', CubeTemplate::with_same_texture(gold_mat,    gold_tex));   
     palette.set('I', CubeTemplate::with_same_texture(iron_mat,    iron_tex));   
     palette.set('V', CubeTemplate::with_same_texture(lava_mat,    lava_tex));
+
+    palette.set('m', CubeTemplate::with_same_texture(stone_mat, diamond_ore_tex));
+    palette.set('o', CubeTemplate::with_same_texture(stone_mat, gold_ore_tex));
+    palette.set('i', CubeTemplate::with_same_texture(stone_mat, iron_ore_tex));
+    
+    palette.set('S', CubeTemplate::with_same_texture(stone_mat, stone));
 
     // ===== CARGA ESCENA ASCII =====
     let cube_size = Vector3::new(1.0, 1.0, 1.0);
@@ -455,7 +468,7 @@ fn main() {
     params.y0 = -0.5;
     params.y_step = 1.0;
 
-    let default_mat = stone;
+    let default_mat = stone_mat;
 
     // Escena dinámica (mutable)
     let mut objects: Vec<Box<dyn RayIntersect>> =
@@ -498,7 +511,7 @@ fn main() {
     let mut current_skybox: usize = 0; // 0 = sky1, 1 = sky2
 
     // ===== Builder HUD/estado =====
-    let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H', 'M', 'O', 'I', 'V'];
+    let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H', 'M', 'O', 'I', 'V', 'm', 'o', 'i', 'S'];
 
     let hotbar_tex = window
         .load_texture(&thread, "assets/ui/hotbar.png")
@@ -519,6 +532,10 @@ fn main() {
         "assets/gold_block/gold_block.png",       // 'O'
         "assets/iron_block/iron_block.png",       // 'I'
         "assets/lava/lava.png",                   // 'V'
+        "assets/diamond_ore/diamond_ore.png",     // 'm'
+        "assets/gold_ore/gold_ore.png",           // 'o'
+        "assets/iron_ore/iron_ore.png",           // 'i'
+        "assets/stone/stone.png",                 // 'S'
     ];
     let mut icons: Vec<Texture2D> = Vec::with_capacity(icon_paths.len());
     for p in icon_paths {
