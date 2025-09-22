@@ -14,6 +14,7 @@ mod scene;
 mod palette;
 mod accel;
 mod build;
+mod skybox; // ← NUEVO
 
 use framebuffer::Framebuffer;
 use ray_intersect::{Intersect, RayIntersect};
@@ -25,6 +26,7 @@ use accel::UniformGridAccel;
 
 use crate::texture::Texture;
 use crate::build::*;
+use crate::skybox::Skybox; // ← NUEVO
 
 const ORIGIN_BIAS: f32 = 1e-3;
 
@@ -37,6 +39,7 @@ fn smooth5(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+/// FONDO fallback (si no hay skybox cargado)
 fn procedural_sky(dir: Vector3) -> Vector3 {
     let d = dir.normalized();
     let t = ((d.y) * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -106,6 +109,15 @@ fn cast_shadow(
 #[derive(Clone, Copy)]
 struct Preview { hovered_idx: usize }
 
+#[inline]
+fn sample_background(ray_direction: &Vector3, skybox: Option<&Skybox>) -> Vector3 {
+    if let Some(sb) = skybox {
+        sb.sample(*ray_direction)
+    } else {
+        procedural_sky(*ray_direction)
+    }
+}
+
 pub fn cast_ray(
     ray_origin: &Vector3,
     ray_direction: &Vector3,
@@ -113,10 +125,11 @@ pub fn cast_ray(
     accel: &UniformGridAccel,
     light: &light::Light,
     depth: u32,
-    preview: Option<Preview>,     // ← NUEVO
+    preview: Option<Preview>,     // ← mantiene preview
+    skybox: Option<&Skybox>,      // ← NUEVO
 ) -> Vector3 {
     if depth > 3 {
-        return procedural_sky(*ray_direction);
+        return sample_background(ray_direction, skybox);
     }
 
     let mut intersect = accel.trace(ray_origin, ray_direction, objects);
@@ -125,9 +138,9 @@ pub fn cast_ray(
     if let Some(pv) = preview {
         if intersect.is_intersecting && intersect.object_index == Some(pv.hovered_idx) {
             let preview_mat = Material::new(
-                Vector3::new(0.9, 0.3, 0.3), // color opaco
+                Vector3::new(0.9, 0.3, 0.3),
                 8.0,
-                [1.0, 0.0, 0.0, 0.0],        // difuso 100%, sin especular/reflex/transp
+                [1.0, 0.0, 0.0, 0.0],
                 1.0
             );
             intersect.material = preview_mat;
@@ -136,7 +149,7 @@ pub fn cast_ray(
     }
 
     if !intersect.is_intersecting {
-        return procedural_sky(*ray_direction);
+        return sample_background(ray_direction, skybox);
     }
 
     let (light_dir, _light_distance) = light.at(intersect.point);
@@ -177,7 +190,7 @@ pub fn cast_ray(
     let reflect_color = if reflectivity > 0.0 {
         let rdir = reflect(ray_direction, &intersect.normal).normalized();
         let ro   = offset_origin(&intersect, &rdir);
-        cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview) // ← pasa preview
+        cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview, skybox)
     } else {
         Vector3::zero()
     };
@@ -185,11 +198,11 @@ pub fn cast_ray(
     let refract_color = if transparency > 0.0 {
         if let Some(tdir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
             let ro = offset_origin(&intersect, &tdir);
-            cast_ray(&ro, &tdir, objects, accel, light, depth + 1, preview) // ← pasa preview
+            cast_ray(&ro, &tdir, objects, accel, light, depth + 1, preview, skybox)
         } else {
             let rdir = reflect(ray_direction, &intersect.normal).normalized();
             let ro   = offset_origin(&intersect, &rdir);
-            cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview) // ← pasa preview
+            cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview, skybox)
         }
     } else {
         Vector3::zero()
@@ -239,7 +252,8 @@ pub fn render(
     accel: &UniformGridAccel,
     camera: &Camera,
     light: &light::Light,
-    preview: Option<Preview>,     // ← NUEVO
+    preview: Option<Preview>,
+    skybox: Option<&Skybox>,  // ← NUEVO
 ) {
     let w = framebuffer.width as usize;
     let h = framebuffer.height as usize;
@@ -273,7 +287,9 @@ pub fn render(
             let height_f_c = height_f;
             let cam_c = cam;
             let span_w = w;
-            let preview_c = preview; // copia para el hilo
+            let preview_c = preview;
+            // Pasamos puntero a skybox (Option) por copia ligera
+            let skybox_c = skybox;
 
             let handle = scope.spawn(move || {
                 let span_h = y_end - y_start;
@@ -297,7 +313,7 @@ pub fn render(
                             v_cam.x * cam_c.right.z + v_cam.y * cam_c.up.z - v_cam.z * cam_c.forward.z,
                         );
 
-                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0, preview_c);
+                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0, preview_c, skybox_c);
                         local[row_off * span_w + x] = vector3_to_color(rgb);
                     }
                 }
@@ -332,22 +348,18 @@ fn neighbor_cell_center_from_face_hit(
     size: Vector3,
     origin: Vector3,
 ) -> Vector3 {
-    // Mete el punto apenas dentro del bloque golpeado
     let eps = 1e-4;
     let p_inside = hit_point - hit_normal * eps;
 
-    // Índices de la celda del bloque golpeado
     let rel = p_inside - origin;
     let mut ix = (rel.x / size.x).floor() as i32;
     let mut iy = (rel.y / size.y).floor() as i32;
     let mut iz = (rel.z / size.z).floor() as i32;
 
-    // Avanza SOLO en el eje de la normal hacia el vecino
     if hit_normal.x > 0.0 { ix += 1; } else if hit_normal.x < 0.0 { ix -= 1; }
     if hit_normal.y > 0.0 { iy += 1; } else if hit_normal.y < 0.0 { iy -= 1; }
     if hit_normal.z > 0.0 { iz += 1; } else if hit_normal.z < 0.0 { iz -= 1; }
 
-    // Centro de esa celda vecina
     Vector3::new(
         origin.x + (ix as f32 + 0.5) * size.x,
         origin.y + (iy as f32 + 0.5) * size.y,
@@ -459,11 +471,18 @@ fn main() {
     let dir_rot_speed = PI / 300.0;
     let move_speed = 0.15;
 
+    // ===== Skyboxes =====
+    // Estructura de carpetas/archivos requerida (ejemplo):
+    // assets/skyboxes/sky1/{posx.png,negx.png,posy.png,negy.png,posz.png,negz.png}
+    // assets/skyboxes/sky2/{posx.png,negx.png,posy.png,negy.png,posz.png,negz.png}
+    let sky1 = Skybox::from_folder("assets/skyboxes/sky1");
+    let sky2 = Skybox::from_folder("assets/skyboxes/sky2");
+    let skyboxes = vec![sky1, sky2];
+    let mut current_skybox: usize = 0; // 0 = sky1, 1 = sky2
+
     // ===== Builder HUD/estado =====
-    // Orden de opciones (coincide con tus teclas Q/E):
     let options = vec!['X', 'D', 'L', 'P', 'G', 'l', 'H'];
 
-    // Carga sprites del HUD
     let hotbar_tex = window
         .load_texture(&thread, "assets/ui/hotbar.png")
         .expect("No se pudo cargar assets/ui/hotbar.png");
@@ -471,16 +490,14 @@ fn main() {
         .load_texture(&thread, "assets/ui/hotbar_selection.png")
         .expect("No se pudo cargar assets/ui/hotbar_selection.png");
 
-    // Carga íconos (MISMO ORDEN que `options`)
-    // Reutilizo las mismas texturas 2D del juego como íconos.
     let icon_paths = vec![
-        "assets/snow_grass/posy.png",           // 'X' (grass top)
-        "assets/dirt/dirt.png",                 // 'D'
-        "assets/spruce_log/spruce_log_top.png", // 'L'
-        "assets/spruce_planks/spruce_planks.png", // 'P'
-        "assets/glass/glass.png",               // 'G'
-        "assets/spruce_leaves/spruce_leaves.png", // 'l'
-        "assets/ice/ice.png",                   // 'H'
+        "assets/snow_grass/posy.png",
+        "assets/dirt/dirt.png",
+        "assets/spruce_log/spruce_log_top.png",
+        "assets/spruce_planks/spruce_planks.png",
+        "assets/glass/glass.png",
+        "assets/spruce_leaves/spruce_leaves.png",
+        "assets/ice/ice.png",
     ];
     let mut icons: Vec<Texture2D> = Vec::with_capacity(icon_paths.len());
     for p in icon_paths {
@@ -489,7 +506,6 @@ fn main() {
 
     let hud_cfg = build::HudConfig { scale: 2.6, bottom_margin: 10, icon_padding_px: 1.0 };
 
-    // Crea el estado con sprites
     let mut builder = BuildState::new_with_sprites_and_cfg(
         options,
         cube_size,
@@ -499,7 +515,6 @@ fn main() {
         hud_cfg
     );
     let grid_origin = params.origin;
-
 
     while !window.window_should_close() {
         // ====== INPUT Cámara ======
@@ -512,6 +527,10 @@ fn main() {
 
         if window.is_key_pressed(KeyboardKey::KEY_ONE) { light.kind = LightKind::Point; }
         if window.is_key_pressed(KeyboardKey::KEY_TWO) { light.kind = LightKind::Directional; }
+
+        // Cambiar skybox con 3/4
+        if window.is_key_pressed(KeyboardKey::KEY_THREE) { current_skybox = 0; }
+        if window.is_key_pressed(KeyboardKey::KEY_FOUR)  { current_skybox = 1; }
 
         if matches!(light.kind, LightKind::Directional) {
             if window.is_key_down(KeyboardKey::KEY_J) { light.yaw_pitch( dir_rot_speed, 0.0); }
@@ -547,7 +566,6 @@ fn main() {
 
         let hit = accel.trace(&ray_origin, &ray_dir, &objects);
 
-        // Prepara preview si hay objeto bajo el cursor
         let mut preview: Option<Preview> = None;
         if hit.is_intersecting {
             if let Some(idx) = hit.object_index {
@@ -557,11 +575,9 @@ fn main() {
 
         // Colocación/Eliminación
         if hit.is_intersecting {
-            // Celda adyacente según normal → click izquierdo
             let target_center = neighbor_cell_center_from_face_hit(
                 hit.point, hit.normal, builder.cube_size, grid_origin
             );
-
 
             if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
                 if let Some(tpl) = palette.get(builder.current_block_char()) {
@@ -571,7 +587,6 @@ fn main() {
                 }
             }
 
-            // Click derecho: quitar el bloque bajo el cursor
             if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
                 if let Some(idx) = hit.object_index {
                     if idx < objects.len() {
@@ -584,10 +599,14 @@ fn main() {
 
         // ===== Render =====
         framebuffer.clear();
-        render(&mut framebuffer, &objects, &accel, &camera, &light, preview);
+        let sky_ref = Some(&skyboxes[current_skybox]);
+        render(&mut framebuffer, &objects, &accel, &camera, &light, preview, sky_ref);
 
         framebuffer.swap_buffers_with(&mut window, &thread, |d| {
             draw_hud_hotbar(d, &builder, window_width, window_height);
+
+            // Tip de control (opcional)
+            d.draw_text("Light [1:Point, 2:Dir]   Skybox [3:Sky1, 4:Sky2]", 12, window_height - 40, 14, Color::LIGHTGRAY);
         });
     }
 }
