@@ -14,10 +14,10 @@ e                       e
                        XX
                         X
 X      _P----P_     L   X
-XXX    _P----P_          
-XXXX   _P----P_          
-XXXX                   XX
-XXXX                  XXX
+XX     _P----P_          
+XX     _P----P_          
+XX                     XX
+XXX                   XXX
 XXXXXX               XDXX
 XXXXXX               XXXX
 XXDXXXX               XXX

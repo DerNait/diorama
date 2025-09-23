@@ -503,7 +503,6 @@ fn main() {
 
     // ===== Skyboxes =====
     // Estructura de carpetas/archivos requerida (ejemplo):
-    // assets/skyboxes/sky1/{posx.png,negx.png,posy.png,negy.png,posz.png,negz.png}
     // assets/skyboxes/sky2/{posx.png,negx.png,posy.png,negy.png,posz.png,negz.png}
     let sky1 = Skybox::from_folder("assets/skyboxes/sky1");
     let sky2 = Skybox::from_folder("assets/skyboxes/sky2");
