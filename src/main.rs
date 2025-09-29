@@ -497,7 +497,7 @@ fn main() {
     let rotation_speed = PI / 100.0;
 
     // ===== Luz =====
-    let mut light = light::Light::directional(Vector3::new(-1.0, -1.0, 0.3), Color::new(255,255,255,255), 1.2);
+    let mut light = light::Light::directional(Vector3::new(1.0, -1.0, -0.3), Color::new(255,255,255,255), 1.2);
     let dir_rot_speed = PI / 300.0;
     let move_speed = 0.15;
 
