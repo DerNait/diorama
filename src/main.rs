@@ -651,7 +651,10 @@ fn main() {
         framebuffer.swap_buffers_with(&mut window, &thread, |d| {
             draw_hud_hotbar(d, &builder, window_width, window_height);
 
-            d.draw_text("Light [1:Point, 2:Dir]   Skybox [3:Sky1, 4:Sky2]", 12, window_height - 40, 14, Color::LIGHTGRAY);
+            d.draw_text("Click izq: colocar", 12, window_height - 100, 14, Color::LIGHTGRAY);
+            d.draw_text("Click der: quitar", 12, window_height - 80, 14, Color::LIGHTGRAY);
+            d.draw_text("Light [1: Point, 2: Dir]", 12, window_height - 60, 14, Color::LIGHTGRAY);
+            d.draw_text("Skybox [3: Sky1, 4: Sky2]", 12, window_height - 40, 14, Color::LIGHTGRAY);
         });
     }
 }
