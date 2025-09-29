@@ -1,8 +1,7 @@
 # Diorama — Proyecto 2: Raytracing (Kevin Villagrán – 23584)
 
 > **Demo (YouTube):**  
-> _⬇️ Inserta aquí el link de tu video cuando esté listo_  
-> `https://youtu.be/XXXXXXXXXXX`
+> [https://youtu.be](https://www.youtube.com/watch?v=SAUbZULWniY)
 
 Raytracer en CPU con **Raylib** para visualización en tiempo real. Soporta:
 - Aceleración por **Uniform Grid** (espacial)
