@@ -14,7 +14,7 @@ mod scene;
 mod palette;
 mod accel;
 mod build;
-mod skybox; // ← NUEVO
+mod skybox;
 
 use framebuffer::Framebuffer;
 use ray_intersect::{Intersect, RayIntersect};
@@ -26,7 +26,7 @@ use accel::UniformGridAccel;
 
 use crate::texture::Texture;
 use crate::build::*;
-use crate::skybox::Skybox; // ← NUEVO
+use crate::skybox::Skybox;
 
 const ORIGIN_BIAS: f32 = 1e-3;
 
@@ -39,7 +39,7 @@ fn smooth5(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-/// FONDO fallback (si no hay skybox cargado)
+/// FONDO fallback
 fn procedural_sky(dir: Vector3) -> Vector3 {
     let d = dir.normalized();
     let t = ((d.y) * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -105,7 +105,7 @@ fn cast_shadow(
     if accel.occluded(&shadow_ray_origin, &light_dir, light_distance, objects) { 1.0 } else { 0.0 }
 }
 
-// ==== PREVIEW sin objeto “ghost” ====
+// ==== PREVIEW ====
 #[derive(Clone, Copy)]
 struct Preview { hovered_idx: usize }
 
@@ -123,10 +123,10 @@ pub fn cast_ray(
     ray_direction: &Vector3,
     objects: &[Box<dyn RayIntersect>],
     accel: &UniformGridAccel,
-    light: &light::Light,
+    lights: &[light::Light], // <-- múltiple luces
     depth: u32,
-    preview: Option<Preview>,     // ← mantiene preview
-    skybox: Option<&Skybox>,      // ← NUEVO
+    preview: Option<Preview>, 
+    skybox: Option<&Skybox>,  
 ) -> Vector3 {
     if depth > 3 {
         return sample_background(ray_direction, skybox);
@@ -134,7 +134,6 @@ pub fn cast_ray(
 
     let mut intersect = accel.trace(ray_origin, ray_direction, objects);
 
-    // Override del material en el objeto hovered para “preview”
     if let Some(pv) = preview {
         if intersect.is_intersecting && intersect.object_index == Some(pv.hovered_idx) {
             let preview_mat = Material::new(
@@ -152,35 +151,83 @@ pub fn cast_ray(
         return sample_background(ray_direction, skybox);
     }
 
-    let (light_dir, _light_distance) = light.at(intersect.point);
+    // Si no hay luces, usa solo background/ambient
+    if lights.is_empty() {
+        return sample_background(ray_direction, skybox);
+    }
+
     let view_dir   = (*ray_origin - intersect.point).normalized();
-    let refl_light = reflect(&-light_dir, &intersect.normal).normalized();
 
-    let shadow_intensity = cast_shadow(&intersect, light, objects, accel);
-    let light_intensity  = light.intensity * (1.0 - shadow_intensity);
+    // Acumuladores por-luz
+    let mut diffuse_sum  = Vector3::zero();
+    let mut specular_sum = Vector3::zero();
+    let mut glint_sum    = Vector3::zero();
 
-    let light_color_v3 = Vector3::new(
-        light.color.r as f32 / 255.0,
-        light.color.g as f32 / 255.0,
-        light.color.b as f32 / 255.0,
-    );
+    let light_color_from = |c: Color| -> Vector3 {
+        Vector3::new(c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0)
+    };
 
-    let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3)
-        .clamp(0.0, 1.0) * light_intensity;
-    let diffuse  = intersect.material.diffuse * diffuse_intensity;
+    for l in lights.iter() {
+        let (light_dir, _light_distance) = l.at(intersect.point);
 
-    let specular_intensity = view_dir
-        .dot(refl_light)
-        .max(0.0)
-        .powf(intersect.material.specular) * light_intensity;
-    let specular = light_color_v3 * specular_intensity;
+        let shadow_intensity = cast_shadow(&intersect, l, objects, accel);
+        let light_intensity  = l.intensity * (1.0 - shadow_intensity);
+
+        let light_color_v3 = light_color_from(l.color);
+
+        let diffuse_intensity = ((intersect.normal.dot(light_dir) + 0.3) / 1.3)
+            .clamp(0.0, 1.0) * light_intensity;
+        diffuse_sum += intersect.material.diffuse * diffuse_intensity;
+
+        let refl_light = reflect(&-light_dir, &intersect.normal).normalized();
+        let specular_intensity = view_dir
+            .dot(refl_light)
+            .max(0.0)
+            .powf(intersect.material.specular) * light_intensity;
+        specular_sum += light_color_v3 * specular_intensity;
+
+        // Glint por-luz
+        let mirror_dir    = reflect(ray_direction, &intersect.normal).normalized();
+        let mirror_origin = offset_origin(&intersect, &mirror_dir);
+
+        let hardness_point = 800.0;
+        let hardness_dir   = 800.0;
+        let gain           = 1.0;
+        let refl_bias      = (intersect.material.albedo[2] + 0.05).min(1.0);
+
+        match l.kind {
+            LightKind::Point => {
+                let to_l = l.position - mirror_origin;
+                let dist = to_l.length();
+                if dist > 0.0 {
+                    let ldir  = to_l / dist;
+                    let align = mirror_dir.dot(ldir).max(0.0);
+                    if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, dist, objects) {
+                        let falloff = 1.0 / (1.0 + dist * dist);
+                        let s = gain * l.intensity * falloff * align.powf(hardness_point) * refl_bias;
+                        glint_sum += light_color_v3 * s;
+                    }
+                }
+            }
+            LightKind::Directional => {
+                let ldir  = -l.direction;
+                let align = mirror_dir.dot(ldir).max(0.0);
+                if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, f32::INFINITY, objects) {
+                    let s = gain * l.intensity * align.powf(hardness_dir) * refl_bias;
+                    glint_sum += light_color_v3 * s;
+                }
+            }
+        }
+    }
 
     let coverage = intersect.coverage;
     let albedo   = intersect.material.albedo;
 
+    let ambient = intersect.material.diffuse * 0.15;
+
     let phong_color =
-        (diffuse + intersect.material.diffuse * 0.15) * (albedo[0] * coverage) +
-        specular * (albedo[1] * coverage);
+        (diffuse_sum + ambient) * (albedo[0] * coverage) +
+        specular_sum * (albedo[1] * coverage);
 
     let reflectivity = albedo[2];
 
@@ -190,7 +237,7 @@ pub fn cast_ray(
     let reflect_color = if reflectivity > 0.0 {
         let rdir = reflect(ray_direction, &intersect.normal).normalized();
         let ro   = offset_origin(&intersect, &rdir);
-        cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview, skybox)
+        cast_ray(&ro, &rdir, objects, accel, lights, depth + 1, preview, skybox)
     } else {
         Vector3::zero()
     };
@@ -198,52 +245,18 @@ pub fn cast_ray(
     let refract_color = if transparency > 0.0 {
         if let Some(tdir) = refract(ray_direction, &intersect.normal, intersect.material.refractive_index) {
             let ro = offset_origin(&intersect, &tdir);
-            cast_ray(&ro, &tdir, objects, accel, light, depth + 1, preview, skybox)
+            cast_ray(&ro, &tdir, objects, accel, lights, depth + 1, preview, skybox)
         } else {
             let rdir = reflect(ray_direction, &intersect.normal).normalized();
             let ro   = offset_origin(&intersect, &rdir);
-            cast_ray(&ro, &rdir, objects, accel, light, depth + 1, preview, skybox)
+            cast_ray(&ro, &rdir, objects, accel, lights, depth + 1, preview, skybox)
         }
     } else {
         Vector3::zero()
     };
 
-    // Glint especular “mirror-light”
-    let mut glint = Vector3::zero();
-    let mirror_dir    = reflect(ray_direction, &intersect.normal).normalized();
-    let mirror_origin = offset_origin(&intersect, &mirror_dir);
-
-    let hardness_point = 800.0;
-    let hardness_dir   = 800.0;
-    let gain           = 1.0;
-    let refl_bias      = (reflectivity + 0.05).min(1.0);
-
-    match light.kind {
-        LightKind::Point => {
-            let to_l = light.position - mirror_origin;
-            let dist = to_l.length();
-            if dist > 0.0 {
-                let ldir  = to_l / dist;
-                let align = mirror_dir.dot(ldir).max(0.0);
-                if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, dist, objects) {
-                    let falloff = 1.0 / (1.0 + dist * dist);
-                    let s = gain * light.intensity * falloff * align.powf(hardness_point) * refl_bias;
-                    glint = light_color_v3 * s;
-                }
-            }
-        }
-        LightKind::Directional => {
-            let ldir  = -light.direction;
-            let align = mirror_dir.dot(ldir).max(0.0);
-            if align > 0.0 && !accel.occluded(&mirror_origin, &ldir, f32::INFINITY, objects) {
-                let s = gain * light.intensity * align.powf(hardness_dir) * refl_bias;
-                glint = light_color_v3 * s;
-            }
-        }
-    }
-
     let k_phong = (1.0 - reflectivity - transparency).max(0.0);
-    phong_color * k_phong + reflect_color * reflectivity + refract_color * transparency + glint
+    phong_color * k_phong + reflect_color * reflectivity + refract_color * transparency + glint_sum
 }
 
 pub fn render(
@@ -251,9 +264,9 @@ pub fn render(
     objects: &[Box<dyn RayIntersect>],
     accel: &UniformGridAccel,
     camera: &Camera,
-    light: &light::Light,
+    lights: &[light::Light], // <-- múltiples luces
     preview: Option<Preview>,
-    skybox: Option<&Skybox>,  // ← NUEVO
+    skybox: Option<&Skybox>,
 ) {
     let w = framebuffer.width as usize;
     let h = framebuffer.height as usize;
@@ -280,7 +293,8 @@ pub fn render(
             if y_start >= h { break; }
             let y_end = ((t + 1) * rows_per).min(h);
 
-            let light_c = *light;
+            // let light_c = *light;                    // (antes)
+            let lights_c: Vec<light::Light> = lights.to_vec(); // NEW
             let aspect_ratio_c = aspect_ratio;
             let perspective_scale_c = perspective_scale;
             let width_f_c = width_f;
@@ -288,7 +302,6 @@ pub fn render(
             let cam_c = cam;
             let span_w = w;
             let preview_c = preview;
-            // Pasamos puntero a skybox (Option) por copia ligera
             let skybox_c = skybox;
 
             let handle = scope.spawn(move || {
@@ -313,7 +326,7 @@ pub fn render(
                             v_cam.x * cam_c.right.z + v_cam.y * cam_c.up.z - v_cam.z * cam_c.forward.z,
                         );
 
-                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &light_c, 0, preview_c, skybox_c);
+                        let rgb = cast_ray(&cam_c.eye, &ray_dir, objects, accel, &lights_c, 0, preview_c, skybox_c);
                         local[row_off * span_w + x] = vector3_to_color(rgb);
                     }
                 }
@@ -373,7 +386,7 @@ fn main() {
 
     let (mut window, thread) = raylib::init()
         .size(window_width, window_height)
-        .title("Raytracer Builder")
+        .title("Diorama - Kevin Villagrán 23584")
         .log_level(TraceLogLevel::LOG_WARNING)
         .build();
 
@@ -395,12 +408,10 @@ fn main() {
     let leaves_mat= Material::new(Vector3::new(1.0, 1.0, 1.0), 35.0, [0.92, 0.08, 0.0, 0.0], 0.0);
     let ice_mat   = Material::new(Vector3::new(1.0, 1.0, 1.0), 10.0, [0.80, 0.10, 0.20, 0.05], 1.31);
 
-    // 👇 NUEVOS (texturizados => diffuse=blanco; specular/reflect ajustados)
     let diamond_mat = Material::new(Vector3::new(1.0, 1.0, 1.0), 140.0, [0.88, 0.12, 0.10, 0.0], 0.0);
     let gold_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0), 120.0, [0.85, 0.15, 0.12, 0.0], 0.0);
     let iron_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0),  60.0, [0.90, 0.10, 0.08, 0.0], 0.0);
 
-    // Lava: sin especular, sin reflexión; se verá “mate” (más el ambiente base de tu shader)
     let lava_mat    = Material::new(Vector3::new(1.0, 1.0, 1.0),   0.0, [1.00, 0.00, 0.00, 0.0], 0.0);
 
     use std::sync::Arc;
@@ -470,18 +481,16 @@ fn main() {
 
     let default_mat = stone_mat;
 
-    // Escena dinámica (mutable)
     let mut objects: Vec<Box<dyn RayIntersect>> =
         scene::load_ascii_layers_with_palette("assets/scene", &params, &palette, default_mat)
             .expect("Error leyendo assets/scene");
 
-    // ===== Aceleración (inicial) =====
     let mut accel = UniformGridAccel::build(&objects, cube_size.x.max(0.01));
 
     // ===== Cámara =====
     let mut camera = Camera::new(
-        Vector3::new(20.0, 10.0, 20.0),
-        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(20.0, 12.0, 25.0),
+        Vector3::new(0.0, 5.0, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
     );
 
@@ -497,12 +506,13 @@ fn main() {
     let rotation_speed = PI / 100.0;
 
     // ===== Luz =====
-    let mut light = light::Light::directional(Vector3::new(1.0, -1.0, -0.3), Color::new(255,255,255,255), 1.2);
+    let mut light = light::Light::directional(Vector3::new(-1.0, -1.0, 0.3), Color::new(255,255,255,255), 1.2);
+    let mut light2 = light::Light::new(Vector3::new(-8.0, 2.0, 5.0), Color::new(245, 149, 39,255), 1.2);
     let dir_rot_speed = PI / 300.0;
     let move_speed = 0.15;
 
     // ===== Skyboxes =====
-    // Estructura de carpetas/archivos requerida (ejemplo):
+    // Estructura de carpetas/archivos requerida:
     // assets/skyboxes/sky2/{posx.png,negx.png,posy.png,negy.png,posz.png,negz.png}
     let sky1 = Skybox::from_folder("assets/skyboxes/sky1");
     let sky2 = Skybox::from_folder("assets/skyboxes/sky2");
@@ -520,7 +530,7 @@ fn main() {
         .expect("No se pudo cargar assets/ui/hotbar_selection.png");
 
     let icon_paths = vec![
-        "assets/snow_grass/posy.png",             // 'X' (grass top)
+        "assets/snow_grass/posy.png",             // 'X'
         "assets/dirt/dirt.png",                   // 'D'
         "assets/spruce_log/spruce_log_top.png",   // 'L'
         "assets/spruce_planks/spruce_planks.png", // 'P'
@@ -610,7 +620,6 @@ fn main() {
             }
         }
 
-        // Colocación/Eliminación
         if hit.is_intersecting {
             let target_center = neighbor_cell_center_from_face_hit(
                 hit.point, hit.normal, builder.cube_size, grid_origin
@@ -637,12 +646,11 @@ fn main() {
         // ===== Render =====
         framebuffer.clear();
         let sky_ref = Some(&skyboxes[current_skybox]);
-        render(&mut framebuffer, &objects, &accel, &camera, &light, preview, sky_ref);
+        render(&mut framebuffer, &objects, &accel, &camera, &[light, light2], preview, sky_ref);
 
         framebuffer.swap_buffers_with(&mut window, &thread, |d| {
             draw_hud_hotbar(d, &builder, window_width, window_height);
 
-            // Tip de control (opcional)
             d.draw_text("Light [1:Point, 2:Dir]   Skybox [3:Sky1, 4:Sky2]", 12, window_height - 40, 14, Color::LIGHTGRAY);
         });
     }

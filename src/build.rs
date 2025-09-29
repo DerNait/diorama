@@ -1,4 +1,3 @@
-// build.rs
 use raylib::prelude::*;
 use crate::material::Material;
 use crate::ray_intersect::RayIntersect;
@@ -9,7 +8,6 @@ use crate::palette::CubeTemplate;
 pub struct HudSprites {
     pub hotbar: Texture2D,        // 182x22
     pub selection: Texture2D,     // 24x23
-    /// Íconos en el mismo orden que `options` (uno por bloque).
     pub icons: Vec<Texture2D>,
 }
 
@@ -38,7 +36,6 @@ pub struct BuildState {
     pub ghost_mat: Material,
     pub current_char: char,
     
-    // NUEVO: sprites del HUD
     pub hud: Option<HudSprites>,
     pub hud_cfg: HudConfig, 
 }
@@ -54,12 +51,11 @@ impl BuildState {
             cube_size,
             ghost_mat,
             current_char,
-            hud: None, // ← por defecto sin sprites
+            hud: None,
             hud_cfg: HudConfig::default(),
         }
     }
 
-    /// Creador con sprites del hotbar (íconos deben ir en el mismo orden que `options`).
     pub fn new_with_sprites_and_cfg(
         options: Vec<char>, cube_size: Vector3,
         hotbar: Texture2D, selection: Texture2D, icons: Vec<Texture2D>,
@@ -92,7 +88,6 @@ impl BuildState {
     }
 }
 
-/// Construye un rayo desde el mouse en espacio cámara → mundo.
 pub fn mouse_ray_dir(
     mouse: Vector2, width: f32, height: f32, fov: f32,
     cam_right: Vector3, cam_up: Vector3, cam_forward: Vector3,
@@ -177,43 +172,35 @@ pub fn find_object_index_by_center(objects: &[Box<dyn RayIntersect>], center: Ve
 }
 
 /// ———————————————————————————————————————————————————————————————
-/// HUD con sprites estilo Minecraft
+/// HUD con sprites estilo
 /// ———————————————————————————————————————————————————————————————
-/// Dibuja hotbar centrado abajo, íconos con margen de 2px y la selección encima.
 pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i32, screen_h: i32) {
     let hud = match &state.hud { Some(h) => h, None => { draw_hud_text(d, state); return; } };
 
-    // 1) Parámetros de escala
     let s  = state.hud_cfg.scale.clamp(0.5, 3.0);
     let bm = state.hud_cfg.bottom_margin;
     let pad = state.hud_cfg.icon_padding_px * s; // padding por lado, escalado
 
-    // 2) Tamaños escalados del hotbar
     let hb_w = hud.hotbar.width() as f32 * s;
     let hb_h = hud.hotbar.height() as f32 * s;
 
-    // 3) Posición centrada abajo
     let hb_x = (screen_w as f32 - hb_w) * 0.5;
     let hb_y = (screen_h as f32 - hb_h) - bm as f32;
 
-    // 4) Dibujar hotbar
     let hb_src = Rectangle { x:0.0, y:0.0, width:hud.hotbar.width() as f32, height:hud.hotbar.height() as f32 };
     let hb_dst = Rectangle { x:hb_x, y:hb_y, width:hb_w, height:hb_h };
     d.draw_texture_pro(&hud.hotbar, hb_src, hb_dst, Vector2::zero(), 0.0, Color::WHITE);
 
-    // 5) Geometría de slots
     let slots = 9usize;
     let pitch = hb_w / slots as f32;      // distancia entre centros
     let cx0   = hb_x + pitch * 0.5;
     let cy    = hb_y + hb_h * 0.5;
 
-    // 6) Paginado: muestra el tramo donde cae la selección
     let total = state.options.len();
     let start = (state.sel_idx / slots) * slots;
     let end   = (start + slots).min(total);
     let visible_count = end - start;
 
-    // 7) Iconos (padding de 2px por lado escalado)
     let icon_size = (pitch.min(hb_h) - 2.0 * pad * 2.0).max(1.0);
 
     for i in 0..visible_count {
@@ -232,7 +219,6 @@ pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i
         d.draw_texture_pro(icon, src, dst, Vector2::zero(), 0.0, Color::WHITE);
     }
 
-    // 8) Selección
     let sel_w = hud.selection.width() as f32 * s;
     let sel_h = hud.selection.height() as f32 * s;
     let local_sel = state.sel_idx.saturating_sub(start).min(visible_count.saturating_sub(1));
@@ -243,7 +229,6 @@ pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i
     let sel_dst = Rectangle { x:sel_cx - sel_w * 0.5, y:sel_cy - sel_h * 0.5, width:sel_w, height:sel_h };
     d.draw_texture_pro(&hud.selection, sel_src, sel_dst, Vector2::zero(), 0.0, Color::WHITE);
 
-    // 9) (Opcional) Indicador de página
     if total > slots {
         let page = start / slots + 1;
         let pages = (total + slots - 1) / slots;
@@ -252,7 +237,7 @@ pub fn draw_hud_hotbar(d: &mut RaylibDrawHandle, state: &BuildState, screen_w: i
     }
 }
 
-/// HUD textual (fallback) — lo dejamos por si quieres ver info de depuración.
+/// HUD textual (fallback)
 pub fn draw_hud_text(d: &mut RaylibDrawHandle, state: &BuildState) {
     let x = 12;
     let mut y = 12;

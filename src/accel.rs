@@ -1,4 +1,3 @@
-// accel.rs
 use raylib::prelude::Vector3;
 use crate::ray_intersect::{Intersect, RayIntersect};
 
@@ -43,7 +42,7 @@ pub struct UniformGridAccel {
     bounds: Aabb,
     dims: [i32; 3],
     cell_size: Vector3,
-    cells: Vec<Vec<usize>>, // por celda, índices a objects[]
+    cells: Vec<Vec<usize>>,
 }
 
 impl UniformGridAccel {
@@ -62,7 +61,6 @@ impl UniformGridAccel {
             };
         }
 
-        // ==== Normal (con objetos) ====
         let mut bounds = Aabb {
             min: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
             max: Vector3::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY),
@@ -179,7 +177,7 @@ impl UniformGridAccel {
 
             for &obj_idx in &self.cells[cell_idx] {
                 let mut i = objects[obj_idx].ray_intersect(ro, rd);
-                i.object_index = Some(obj_idx); // ← marca qué objeto golpeaste
+                i.object_index = Some(obj_idx);
                 if i.is_intersecting && i.distance >= t_enter - eps && i.distance < best_t {
                     best_t = i.distance;
                     best = i;
@@ -290,7 +288,6 @@ impl UniformGridAccel {
         false
     }
 
-    // Las versiones *excluding* por si te sirven más adelante:
     pub fn trace_excluding(
         &self,
         ro: &Vector3,

@@ -14,7 +14,7 @@ impl Face {
     }
 }
 
-/// AABB con texturas por cara (opcionales, compartidas por Arc)
+/// AABB con texturas por cara
 pub struct Cube {
     pub min: Vector3,
     pub max: Vector3,
@@ -58,9 +58,6 @@ fn luminance(rgb: Vector3) -> f32 {
     (rgb.x * 0.2126 + rgb.y * 0.7152 + rgb.z * 0.0722).clamp(0.0, 1.0)
 }
 
-/// Aplica estilo. Devuelve:
-/// - Some((color, coverage)) si el texel es visible (coverage 0..1).
-/// - None si el texel debe considerarse “hueco” (cutout).
 fn sample_with_style(tex: &Texture, u: f32, v: f32, style: &TexStyle) -> Option<(Vector3, f32)> {
     match style {
         TexStyle::Normal => {
@@ -84,7 +81,6 @@ fn sample_with_style(tex: &Texture, u: f32, v: f32, style: &TexStyle) -> Option<
                 Some((Vector3::new(color.x * a, color.y * a, color.z * a), 1.0))
             }
         }
-        // --- Cutout por alpha de imagen ---
         TexStyle::ImageAlphaCutout { threshold } => {
             let (base, alpha) = tex.sample_clamp_rgba(u, v);
             if alpha <= *threshold { None } else { Some((base, 1.0)) }
@@ -96,7 +92,6 @@ fn sample_with_style(tex: &Texture, u: f32, v: f32, style: &TexStyle) -> Option<
                 Some((Vector3::new(color.x * l, color.y * l, color.z * l), 1.0))
             }
         }
-        // --- Ventana: coverage = alpha (NO cutout). Refleja aunque alpha sea bajo.
         TexStyle::ImageAlphaWindow { threshold } => {
             let (base, alpha) = tex.sample_clamp_rgba(u, v);
             let cov = if alpha <= *threshold { 0.0 } else { alpha };
@@ -168,7 +163,6 @@ impl RayIntersect for Cube {
         u = u.clamp(0.0 + tiny, 1.0 - tiny);
         v = v.clamp(0.0 + tiny, 1.0 - tiny);
 
-        // Material final + coverage
         let (final_material, coverage) = if let Some(face_layer) = &self.face_textures[face.idx()] {
             match sample_with_style(&face_layer.tex, u, v, &face_layer.style) {
                 Some((tex_color, cov)) => {
